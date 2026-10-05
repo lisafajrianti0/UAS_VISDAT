@@ -1,0 +1,951 @@
+---
+title: "Sebelum Usia Lima"
+subtitle: "Membaca peta kematian balita Indonesia melalui wilayah, ruang, dan karakteristik sosial-ekonomi"
+author: ""
+date: ""
+format:
+  html:
+    toc: false
+    page-layout: full
+    self-contained: false
+    smooth-scroll: true
+    theme: none
+    code-fold: false
+    html-math-method: katex
+execute:
+  echo: false
+  warning: false
+  message: false
+  freeze: false
+---
+
+```{r}
+# ================================================================
+# SETUP — membaca hasil pengolahan data, bukan menghitung ulang
+# ================================================================
+
+required <- c(
+  "tidyverse", "readr", "sf", "plotly", "leaflet", "htmltools",
+  "scales", "viridis", "crosstalk", "jsonlite"
+)
+missing_pkg <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkg) > 0) {
+  stop(
+    "Paket R berikut belum terpasang: ", paste(missing_pkg, collapse = ", "),
+    ". Silakan pasang terlebih dahulu sebelum me-render index.qmd."
+  )
+}
+
+library(tidyverse)
+library(readr)
+library(sf)
+library(plotly)
+library(leaflet)
+library(htmltools)
+library(scales)
+library(viridis)
+library(crosstalk)
+library(jsonlite)
+
+options(scipen = 999)
+
+# Menyesuaikan lokasi kerja dengan struktur proyek.
+# index.qmd diasumsikan berada di akar proyek, sedangkan data berada di data/olahan/.
+root <- normalizePath(".", winslash = "/", mustWork = TRUE)
+out_dir <- file.path(root, "data", "olahan")
+
+# Fungsi pembantu agar pembacaan RDS tetap fleksibel terhadap struktur objek hasil pengolahan.
+read_rds_df <- function(path, preferred = NULL) {
+  x <- readRDS(path)
+  if (is.data.frame(x)) return(as_tibble(x))
+  if (is.list(x) && !is.null(preferred)) {
+    for (nm in preferred) {
+      if (!is.null(x[[nm]]) && is.data.frame(x[[nm]])) return(as_tibble(x[[nm]]))
+    }
+  }
+  stop("Objek pada ", basename(path), " tidak dapat dibaca sebagai data.frame.")
+}
+
+# Palet utama: gelap sebagai kanvas, cividis untuk encoding kuantitatif.
+# Cividis dipilih karena relatif ramah terhadap buta warna dan tetap terbaca pada latar gelap.
+uv <- viridis::viridis(6, option = "C")
+
+hier <- read_csv(file.path(out_dir, "hierarki_final.csv"), show_col_types = FALSE) %>%
+  mutate(
+    pulau = as.character(pulau),
+    provinsi = as.character(provinsi),
+    kabkota = as.character(kabkota),
+    u5mr = as.numeric(u5mr),
+    balita = as.numeric(balita),
+    kelas_jenks = as.integer(kelas_jenks),
+    kelas_kuantil = as.integer(kelas_kuantil)
+  )
+
+hier_prov <- read_rds_df(file.path(out_dir, "hierarki_provinsi.rds"),
+                         preferred = c("hierarki_provinsi", "data"))
+
+prov_multi <- read_rds_df(file.path(out_dir, "provinsi_multivariat.rds"),
+                          preferred = c("provinsi_multivariat", "data"))
+
+centroid <- readRDS(file.path(out_dir, "centroid_kabkota.rds"))
+if (!inherits(centroid, "sf")) stop("centroid_kabkota.rds harus berupa objek sf.")
+centroid <- st_transform(centroid, 4326)
+
+geo <- st_read(file.path(out_dir, "kabkota_geo.geojson"), quiet = TRUE) %>%
+  st_transform(4326)
+
+pca_obj <- readRDS(file.path(out_dir, "hasil_pca.rds"))
+cluster_obj <- readRDS(file.path(out_dir, "hasil_klaster.rds"))
+metadata <- read_csv(file.path(out_dir, "metadata_sumber.csv"), show_col_types = FALSE)
+
+# ---------------------------------------------------------------
+# Helper untuk mengambil komponen objek PCA/klaster jika berupa list.
+# ---------------------------------------------------------------
+get_first_df <- function(x, candidates = character()) {
+  if (is.data.frame(x)) return(as_tibble(x))
+  if (is.list(x)) {
+    for (nm in candidates) {
+      if (!is.null(x[[nm]]) && is.data.frame(x[[nm]])) return(as_tibble(x[[nm]]))
+    }
+    for (z in x) if (is.data.frame(z)) return(as_tibble(z))
+  }
+  NULL
+}
+
+# Skor PCA.
+pca_scores <- get_first_df(
+  pca_obj,
+  c("scores", "skor", "pca_scores", "scores_pca", "hasil_skor")
+)
+if (is.null(pca_scores)) stop("Skor PCA tidak ditemukan pada hasil_pca.rds.")
+
+# Loading PCA.
+pca_loadings <- get_first_df(
+  pca_obj,
+  c("loadings", "loading", "pca_loadings", "hasil_loading")
+)
+
+# Varians terjelaskan, bila tersedia.
+var_explained <- NULL
+if (is.list(pca_obj)) {
+  for (nm in c("variance", "varians", "var_explained", "prop_var", "explained_variance")) {
+    if (!is.null(pca_obj[[nm]])) {
+      var_explained <- as.numeric(pca_obj[[nm]])
+      break
+    }
+  }
+}
+
+# Dataset klaster.
+cluster_df <- get_first_df(
+  cluster_obj,
+  c("cluster", "clusters", "hasil_klaster", "klaster", "data")
+)
+if (is.null(cluster_df)) stop("Data klaster tidak ditemukan pada hasil_klaster.rds.")
+
+# ---------------------------------------------------------------
+# Standarisasi nama kolom untuk kebutuhan visualisasi.
+# ---------------------------------------------------------------
+find_col <- function(df, patterns) {
+  nms <- names(df)
+  hit <- unique(unlist(lapply(patterns, function(p) grep(p, nms, ignore.case = TRUE, value = TRUE))))
+  if (length(hit)) hit[1] else NULL
+}
+
+prov_col <- find_col(prov_multi, c("provinsi", "province", "wilayah"))
+if (is.null(prov_col)) stop("Kolom provinsi tidak ditemukan pada provinsi_multivariat.rds.")
+prov_multi <- prov_multi %>% rename(provinsi = all_of(prov_col))
+
+# Cari nama provinsi pada skor PCA dan klaster jika berbeda.
+pca_prov_col <- find_col(pca_scores, c("provinsi", "province", "wilayah"))
+if (!is.null(pca_prov_col) && pca_prov_col != "provinsi") {
+  pca_scores <- pca_scores %>% rename(provinsi = all_of(pca_prov_col))
+}
+
+cluster_prov_col <- find_col(cluster_df, c("provinsi", "province", "wilayah"))
+if (!is.null(cluster_prov_col) && cluster_prov_col != "provinsi") {
+  cluster_df <- cluster_df %>% rename(provinsi = all_of(cluster_prov_col))
+}
+
+# Pastikan PC1 dan PC2 memiliki nama yang mudah dipanggil.
+pc_cols <- names(pca_scores)[grepl("^PC[12]$|PC[12]", names(pca_scores), ignore.case = TRUE)]
+if (length(pc_cols) < 2) stop("PC1 dan PC2 tidak ditemukan pada hasil_pca.rds.")
+if (!"PC1" %in% names(pca_scores)) names(pca_scores)[match(pc_cols[1], names(pca_scores))] <- "PC1"
+if (!"PC2" %in% names(pca_scores)) names(pca_scores)[match(pc_cols[2], names(pca_scores))] <- "PC2"
+
+# Cari kolom klaster dan pencilan.
+cl_col <- find_col(cluster_df, c("^klaster$", "^cluster$", "cluster_id", "k_"))
+out_col <- find_col(cluster_df, c("pencilan", "outlier"))
+if (is.null(cl_col)) {
+  # Jika tidak ada label klaster yang eksplisit, hentikan agar tidak membuat label palsu.
+  stop("Kolom klaster tidak ditemukan pada hasil_klaster.rds.")
+}
+cluster_df <- cluster_df %>% rename(klaster = all_of(cl_col))
+if (!is.null(out_col)) cluster_df <- cluster_df %>% rename(pencilan = all_of(out_col))
+else cluster_df <- cluster_df %>% mutate(pencilan = FALSE)
+
+# ---------------------------------------------------------------
+# Nilai ekstrem provinsi untuk pembuka.
+# ---------------------------------------------------------------
+prov_u5mr <- hier_prov %>%
+  select(any_of(c("pulau", "provinsi", "u5mr_resmi", "balita_provinsi"))) %>%
+  filter(!is.na(provinsi), !is.na(u5mr_resmi))
+
+best_prov <- prov_u5mr %>% slice_min(u5mr_resmi, n = 1, with_ties = FALSE)
+worst_prov <- prov_u5mr %>% slice_max(u5mr_resmi, n = 1, with_ties = FALSE)
+
+# ================================================================
+# DATA UNTUK HIERARKI — 7 pulau > 38 provinsi > 514 kab/kota
+# ================================================================
+
+# Agregasi parent node menggunakan total balita dan rata-rata U5MR berbobot jumlah balita.
+weighted_u5mr <- function(u, w) {
+  if (all(is.na(u))) return(NA_real_)
+  weighted.mean(u, w = ifelse(is.na(w), 0, w), na.rm = TRUE)
+}
+
+node_kab <- hier %>%
+  transmute(
+    id = paste("kab", key, sep = "|"),
+    label = kabkota,
+    parent = paste("prov", pulau, provinsi, sep = "|"),
+    value = balita,
+    color = u5mr,
+    level = "Kabupaten/Kota"
+  )
+
+node_prov <- hier %>%
+  group_by(pulau, provinsi) %>%
+  summarise(
+    value = sum(balita, na.rm = TRUE),
+    color = weighted_u5mr(u5mr, balita),
+    .groups = "drop"
+  ) %>%
+  transmute(
+    id = paste("prov", pulau, provinsi, sep = "|"),
+    label = provinsi,
+    parent = paste("pulau", pulau, sep = "|"),
+    value = value,
+    color = color,
+    level = "Provinsi"
+  )
+
+node_pulau <- hier %>%
+  group_by(pulau) %>%
+  summarise(
+    value = sum(balita, na.rm = TRUE),
+    color = weighted_u5mr(u5mr, balita),
+    .groups = "drop"
+  ) %>%
+  transmute(
+    id = paste("pulau", pulau, sep = "|"),
+    label = pulau,
+    parent = "Indonesia",
+    value = value,
+    color = color,
+    level = "Kelompok pulau"
+  )
+
+hier_nodes <- bind_rows(
+  tibble(id = "Indonesia", label = "Indonesia", parent = "", value = sum(hier$balita),
+         color = weighted_u5mr(hier$u5mr, hier$balita), level = "Nasional"),
+  node_pulau, node_prov, node_kab
+)
+
+# ================================================================
+# BAGIAN 04 — data multivariat
+# ================================================================
+
+# Delapan variabel numerik: gunakan semua kolom numerik yang tersedia,
+# bukan membuat angka baru. Kolom identitas seperti provinsi dikeluarkan.
+num_cols <- names(prov_multi)[vapply(prov_multi, is.numeric, logical(1))]
+if (length(num_cols) < 8) stop("Data multivariat memiliki kurang dari 8 variabel numerik.")
+num_cols <- num_cols[seq_len(8)]
+
+multi_long <- prov_multi %>%
+  select(provinsi, all_of(num_cols)) %>%
+  pivot_longer(-provinsi, names_to = "variabel", values_to = "nilai")
+
+# Gabungkan skor PCA dengan klaster untuk warna dan identifikasi pencilan.
+pca_view <- pca_scores %>%
+  left_join(cluster_df %>% select(provinsi, klaster, pencilan), by = "provinsi") %>%
+  left_join(prov_u5mr %>% select(provinsi, u5mr_resmi), by = "provinsi")
+
+# ================================================================
+# BAGIAN 05 — urutan heatmap
+# ================================================================
+
+# Gunakan urutan hierarkis dari hasil pengolahan jika tersedia.
+cluster_order <- NULL
+if (is.list(cluster_obj)) {
+  for (nm in c("hclust", "hierarchy", "urutan_hierarkis", "heatmap_order", "order")) {
+    if (!is.null(cluster_obj[[nm]])) {
+      z <- cluster_obj[[nm]]
+      if (inherits(z, "hclust")) cluster_order <- z$order
+      else if (is.numeric(z) || is.integer(z)) cluster_order <- z
+      break
+    }
+  }
+}
+
+heat <- prov_multi %>% select(provinsi, all_of(num_cols)) %>%
+  mutate(across(all_of(num_cols), ~ as.numeric(scale(.x)))) %>%
+  pivot_longer(-provinsi, names_to = "variabel", values_to = "z")
+
+if (!is.null(cluster_order) && length(cluster_order) == nrow(prov_multi)) {
+  ord_names <- prov_multi$provinsi[cluster_order]
+  heat$provinsi <- factor(heat$provinsi, levels = ord_names)
+} else {
+  heat$provinsi <- factor(heat$provinsi, levels = sort(unique(heat$provinsi)))
+}
+
+# ================================================================
+# METADATA — hanya informasi yang sudah disediakan oleh data olahan.
+# ================================================================
+
+metadata_text <- metadata %>%
+  mutate(
+    url = ifelse(is.na(url) | url == "", "URL belum diisi", url),
+    tanggal_akses = ifelse(is.na(tanggal_akses) | tanggal_akses == "", "Tanggal akses belum diisi", tanggal_akses)
+  )
+```
+
+::: {.hero-section}
+<div class="hero-grid">
+  <div>
+    <div class="eyebrow">DATA STORY · INDONESIA · 2025</div>
+    <h1>Sebelum<br><span>Usia Lima</span></h1>
+    <p class="hero-deck">Membaca angka kematian balita melalui <strong>514 kabupaten/kota</strong>, dari struktur wilayah hingga pola sosial-ekonomi yang menyertainya.</p>
+    <div class="scroll-cue">SCROLL UNTUK MENJELAJAHI <span>↓</span></div>
+  </div>
+  <div class="hero-stat-card">
+    <div class="micro">U5MR · ANGKA KEMATIAN BALITA</div>
+    <div class="hero-number">`r scales::number(worst_prov$u5mr_resmi, accuracy = 0.01)`</div>
+    <div class="hero-unit">per 1.000 kelahiran hidup</div>
+    <div class="hero-rule"></div>
+    <div class="hero-small">tertinggi · `r worst_prov$provinsi`</div>
+  </div>
+</div>
+:::
+
+::: {.story-note}
+**Satu angka tidak menceritakan seluruh Indonesia.** U5MR adalah Angka Kematian Balita—jumlah kematian anak sebelum usia lima tahun per 1.000 kelahiran hidup. Di sini, angka tersebut dibaca dari tiga arah: **wilayah**, **ruang**, dan **karakteristik yang menyertainya**.
+:::
+
+# 01 · Dari Indonesia ke wilayah
+
+## Tidak semua tempat memulai dari titik yang sama
+
+```{r}
+# Unit chart pembuka: dua ekstrem provinsi.
+# Posisi horizontal digunakan karena lebih mudah dibandingkan dua angka daripada dekorasi radial.
+hero_range <- tibble(
+  provinsi = c(best_prov$provinsi, worst_prov$provinsi),
+  u5mr = c(best_prov$u5mr_resmi, worst_prov$u5mr_resmi),
+  status = c("Terendah", "Tertinggi")
+)
+
+p_range <- ggplot(hero_range, aes(x = u5mr, y = reorder(status, u5mr))) +
+  geom_segment(aes(x = min(u5mr) - 3, xend = max(u5mr) + 3, yend = status), linewidth = 1, color = "#34404d") +
+  geom_point(aes(color = status), size = 7) +
+  geom_text(aes(label = paste0(scales::number(u5mr, accuracy = .01), " · ", provinsi)),
+            hjust = ifelse(hero_range$status == "Terendah", 1.08, -0.08), size = 4.1, color = "#f2f4f7") +
+  scale_color_manual(values = c("Terendah" = "#A8FF60", "Tertinggi" = "#67E8F9")) +
+  scale_x_continuous(expand = expansion(mult = c(.08, .08))) +
+  labs(x = "U5MR per 1.000 kelahiran hidup", y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(color = "#28313b"),
+    axis.text = element_text(color = "#aeb8c5"),
+    axis.title.x = element_text(color = "#8e9aaa"),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA)
+  )
+
+plotly::ggplotly(p_range, tooltip = c("x", "colour")) %>%
+  layout(
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    margin = list(l = 40, r = 40, t = 20, b = 55)
+  )
+```
+
+<div class="insight-card accent-lime">
+  <div class="insight-label">BACAAN PERTAMA</div>
+  <div class="insight-title">Rentang antarwilayah adalah bagian dari ceritanya.</div>
+  <div class="insight-text">Provinsi dengan U5MR terendah berada di <strong>`r best_prov$provinsi`</strong> sebesar <strong>`r scales::number(best_prov$u5mr_resmi, accuracy=.01)`</strong>, sedangkan nilai tertinggi berada di <strong>`r worst_prov$provinsi`</strong> sebesar <strong>`r scales::number(worst_prov$u5mr_resmi, accuracy=.01)`</strong>. Selanjutnya kita turunkan skala analisis hingga kabupaten/kota.</div>
+</div>
+
+# 02 · Struktur wilayah
+
+## Indonesia bukan satu blok warna
+
+Struktur administrasi dipakai sebagai **hierarki geografis**, bukan sebagai urutan sebab-akibat: **kelompok pulau → provinsi → kabupaten/kota**. Ukuran bidang menunjukkan jumlah penduduk balita; warna menunjukkan U5MR. Dengan begitu, dua pertanyaan dapat dibaca sekaligus tanpa mencampur dua makna visual.
+
+::: {.viz-frame}
+```{r}
+# Treemap: area = jumlah balita; warna = U5MR.
+plot_ly(
+  hier_nodes,
+  type = "treemap",
+  ids = ~id,
+  labels = ~label,
+  parents = ~parent,
+  values = ~value,
+  branchvalues = "total",
+  marker = list(
+    colors = ~color,
+    colorscale = "Cividis",
+    colorbar = list(title = "U5MR", tickfont = list(color = "#b9c2cc"), titlefont = list(color = "#b9c2cc"))
+  ),
+  texttemplate = "%{label}<br>%{value:,}<br>%{color:.2f}",
+  hovertemplate = paste(
+    "<b>%{label}</b><br>",
+    "Level: %{customdata}<br>",
+    "Balita: %{value:,}<br>",
+    "U5MR: %{color:.2f}<extra></extra>"
+  ),
+  customdata = ~level
+) %>%
+  layout(
+    title = list(text = "Treemap · ukuran menunjukkan populasi balita", font = list(color = "#f2f4f7")),
+    margin = list(l = 10, r = 10, t = 50, b = 10),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5"),
+    uniformtext = list(minsize = 9, mode = "hide")
+  )
+```
+:::
+
+::: {.viz-frame}
+```{r}
+# Sunburst: struktur yang sama dari sudut pandang part-to-whole.
+plot_ly(
+  hier_nodes,
+  type = "sunburst",
+  ids = ~id,
+  labels = ~label,
+  parents = ~parent,
+  values = ~value,
+  branchvalues = "total",
+  marker = list(
+    colors = ~color,
+    colorscale = "Cividis",
+    colorbar = list(title = "U5MR", tickfont = list(color = "#b9c2cc"), titlefont = list(color = "#b9c2cc"))
+  ),
+  hovertemplate = paste(
+    "<b>%{label}</b><br>",
+    "Level: %{customdata}<br>",
+    "Balita: %{value:,}<br>",
+    "U5MR: %{color:.2f}<extra></extra>"
+  ),
+  customdata = ~level
+) %>%
+  layout(
+    title = list(text = "Sunburst · klik untuk drill-down", font = list(color = "#f2f4f7")),
+    margin = list(l = 10, r = 10, t = 50, b = 10),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5")
+  )
+```
+:::
+
+<div class="interaction-note"><span>INTERAKSI</span> Klik bagian pada treemap/sunburst untuk memperbesar struktur wilayah; gunakan breadcrumb/back untuk kembali ke tingkat sebelumnya. Hover menampilkan jumlah balita dan U5MR.</div>
+<div class="source-inline">Sumber: BPS · Data 2025</div>
+
+<div class="insight-card accent-cyan">
+  <div class="insight-label">CARA MEMBACA</div>
+  <div class="insight-title">Ukuran dan warna menjawab dua pertanyaan berbeda.</div>
+  <div class="insight-text">Bidang yang lebih besar berarti lebih banyak balita. Warna yang bergerak sepanjang skala cividis menunjukkan U5MR. Encoding ini sengaja dipisahkan agar pembaca tidak perlu menafsirkan luas area sebagai risiko.</div>
+</div>
+
+# 03 · Peta sebaran
+
+## Risiko memiliki alamat
+
+Hierarki memperlihatkan struktur. Peta memperlihatkan **kedekatan dan pola ruang**. Setiap poligon adalah satu kabupaten/kota; warna menunjukkan U5MR. Dua klasifikasi yang sudah dihitung pada tahap pengolahan disediakan untuk dibandingkan: **Jenks** sebagai klasifikasi berbasis natural breaks dan **kuantil** sebagai pembagian jumlah wilayah yang lebih seimbang.
+
+::: {.viz-frame}
+```{r}
+# Choropleth Jenks sebagai tampilan utama.
+# Poligon memakai kelas U5MR, sedangkan tooltip memberikan angka kontinu agar pembaca tidak kehilangan presisi.
+pal_jenks <- colorFactor(
+  palette = viridis::viridis(5, option = "C"),
+  domain = sort(unique(geo$kelas_jenks)),
+  ordered = TRUE
+)
+
+labels_geo <- sprintf(
+  "<strong>%s</strong><br>Provinsi: %s<br>U5MR: %.2f per 1.000<br>Balita: %s<br>Peringkat nasional: %s",
+  geo$kabkota,
+  geo$provinsi,
+  geo$u5mr,
+  scales::comma(geo$balita, accuracy = 1),
+  geo$peringkat_nasional
+) %>% lapply(HTML)
+
+m_jenks <- leaflet(geo, options = leafletOptions(minZoom = 4, maxZoom = 12)) %>%
+  addProviderTiles("CartoDB.DarkMatter", group = "Gelap") %>%
+  addProviderTiles("CartoDB.Positron", group = "Terang") %>%
+  addPolygons(
+    fillColor = ~pal_jenks(kelas_jenks),
+    fillOpacity = 0.82,
+    color = "#26313d",
+    weight = 0.35,
+    opacity = 0.9,
+    label = labels_geo,
+    highlightOptions = highlightOptions(weight = 2, color = "#A8FF60", bringToFront = TRUE),
+    group = "U5MR · Jenks"
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Gelap", "Terang"),
+    overlayGroups = c("U5MR · Jenks"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  addLegend(
+    pal = pal_jenks, values = ~kelas_jenks,
+    title = "Kelas U5MR · Jenks", position = "bottomright",
+    opacity = 0.9
+  )
+
+m_jenks
+```
+:::
+
+<div class="interaction-note"><span>INTERAKSI</span> Hover untuk detail wilayah, klik untuk fokus, zoom/pan untuk membaca pola lokal, dan gunakan kontrol layer untuk mengganti basemap.</div>
+<div class="source-inline">Sumber: BPS · Batas wilayah digital sebagai data pendukung</div>
+
+::: {.viz-frame compact}
+```{r}
+# Pembanding klasifikasi kuantil.
+pal_q <- colorFactor(
+  palette = viridis::viridis(5, option = "C"),
+  domain = sort(unique(geo$kelas_kuantil)),
+  ordered = TRUE
+)
+
+leaflet(geo, options = leafletOptions(minZoom = 4, maxZoom = 12)) %>%
+  addProviderTiles("CartoDB.DarkMatter") %>%
+  addPolygons(
+    fillColor = ~pal_q(kelas_kuantil), fillOpacity = 0.82,
+    color = "#26313d", weight = 0.35,
+    label = labels_geo,
+    highlightOptions = highlightOptions(weight = 2, color = "#67E8F9", bringToFront = TRUE)
+  ) %>%
+  addLegend(pal = pal_q, values = ~kelas_kuantil,
+            title = "Kelas U5MR · Kuantil", position = "bottomright")
+```
+:::
+
+<div class="source-inline">Sumber: BPS · Data 2025</div>
+
+<div class="insight-card accent-lime">
+  <div class="insight-label">MENGAPA DUA KLASIFIKASI?</div>
+  <div class="insight-title">Klasifikasi mengubah cara pola terlihat.</div>
+  <div class="insight-text">Jenks membantu mempertahankan kelompok nilai yang secara alami berdekatan, sedangkan kuantil membagi wilayah ke dalam kelas dengan jumlah observasi yang relatif seimbang. Angka U5MR tetap tersedia di tooltip sehingga kelas warna tidak menggantikan nilai sebenarnya.</div>
+</div>
+
+# 04 · Ketika jumlah balita masuk ke peta
+
+## Banyak penduduk balita tidak otomatis berarti U5MR tinggi
+
+Peta kedua mengubah pertanyaan. Alih-alih melihat seluruh wilayah sebagai bidang, kita menaruh **lingkaran pada pusat masing-masing kabupaten/kota**. Radius menunjukkan jumlah balita; warna tetap membawa U5MR. Perbedaan dua encoding ini membantu melihat wilayah yang secara demografis besar tetapi tidak selalu memiliki risiko kematian balita yang paling tinggi.
+
+::: {.viz-frame}
+```{r}
+# Proportional symbol.
+# st_point_on_surface lebih aman daripada centroid geometris untuk poligon yang tidak cembung.
+pal_point <- colorNumeric(
+  palette = viridis::viridis(256, option = "C"),
+  domain = centroid$u5mr,
+  na.color = "transparent"
+)
+
+radius_scale <- function(x) {
+  # Radius berbasis akar agar perbedaan area simbol lebih sesuai dengan persepsi luas.
+  scales::rescale(sqrt(x), to = c(4, 22))
+}
+
+leaflet(centroid, options = leafletOptions(minZoom = 4, maxZoom = 12)) %>%
+  addProviderTiles("CartoDB.DarkMatter") %>%
+  addCircleMarkers(
+    radius = ~radius_scale(balita),
+    fillColor = ~pal_point(u5mr),
+    fillOpacity = 0.78,
+    color = "#f2f4f7",
+    weight = 0.35,
+    stroke = TRUE,
+    label = ~sprintf(
+      "%s · %s · U5MR %.2f · balita %s · peringkat nasional %s",
+      kabkota, provinsi, u5mr, scales::comma(balita), peringkat_nasional
+    ),
+    popup = ~sprintf(
+      "<strong>%s</strong><br>Provinsi: %s<br>U5MR: %.2f per 1.000<br>Jumlah balita: %s<br>Peringkat nasional: %s<br>Peringkat provinsi: %s",
+      kabkota, provinsi, u5mr, scales::comma(balita), peringkat_nasional, peringkat_provinsi
+    ),
+    highlightOptions = highlightOptions(weight = 2, color = "#A8FF60", bringToFront = TRUE)
+  ) %>%
+  addLegend(
+    position = "bottomright", pal = pal_point,
+    values = ~u5mr, title = "U5MR"
+  )
+```
+:::
+
+<div class="source-inline">Sumber: BPS · Data 2025</div>
+
+<div class="insight-card accent-cyan">
+  <div class="insight-label">PERTANYAAN KUNCI</div>
+  <div class="insight-title">Di mana beban populasi balita bertemu dengan risiko?</div>
+  <div class="insight-text">Ukuran simbol tidak menyatakan risiko. Ia menyatakan skala populasi balita. Warna menyatakan U5MR. Memisahkan keduanya membuat pembaca dapat menemukan kombinasi yang penting: simbol besar dengan warna risiko tinggi.</div>
+</div>
+
+# 05 · Apa yang menyertai?
+
+## U5MR tidak berdiri sendirian
+
+Sampai titik ini, kita melihat **di mana** dan **seberapa besar**. Sekarang kita bertanya: apakah provinsi dengan pola kematian yang berbeda juga memiliki profil sosial-ekonomi yang berbeda?
+
+Data multivariat terdiri dari **38 provinsi dan 8 variabel numerik**, sehingga satu grafik saja tidak cukup. PCA digunakan untuk mereduksi dimensi; parallel coordinates mempertahankan profil delapan variabel; heatmap membantu melihat pola antarkelompok.
+
+::: {.viz-frame}
+```{r}
+# PCA: setiap titik adalah satu provinsi.
+# Warna = klaster; bentuk/outline = pencilan.
+pca_shared <- SharedData$new(pca_view, key = ~provinsi, group = "multivariate")
+
+plot_ly(
+  pca_shared,
+  x = ~PC1, y = ~PC2,
+  type = "scatter", mode = "markers+text",
+  text = ~provinsi,
+  textposition = "top center",
+  marker = list(size = 10, opacity = 0.82),
+  color = ~factor(klaster), colors = "Cividis",
+  symbol = ~factor(pencilan),
+  customdata = ~cbind(u5mr_resmi, klaster, pencilan),
+  hovertemplate = paste(
+    "<b>%{text}</b><br>",
+    "PC1: %{x:.2f}<br>PC2: %{y:.2f}<br>",
+    "U5MR: %{customdata[0]:.2f}<br>",
+    "Klaster: %{customdata[1]}<br>",
+    "Pencilan: %{customdata[2]}<extra></extra>"
+  )
+) %>%
+  layout(
+    title = list(text = "PCA · peta kemiripan profil provinsi", font = list(color = "#f2f4f7")),
+    xaxis = list(title = "PC1", zeroline = FALSE),
+    yaxis = list(title = "PC2", zeroline = FALSE),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5"),
+    legend = list(title = list(text = "Klaster"))
+  ) %>%
+  highlight(on = "plotly_selected", off = "plotly_deselect", persistent = TRUE)
+```
+:::
+
+::: {.metric-strip}
+<div><span class="metric-label">OBSERVASI</span><strong>38 provinsi</strong></div>
+<div><span class="metric-label">DIMENSI</span><strong>8 variabel</strong></div>
+<div><span class="metric-label">REDUKSI</span><strong>PCA</strong></div>
+<div><span class="metric-label">LINKING</span><strong>Provinsi ↔ profil</strong></div>
+</div>
+:::
+
+::: {.viz-frame}
+```{r}
+# Parallel coordinates.
+# Menggunakan SharedData yang sama dengan PCA agar seleksi provinsi dapat ditautkan.
+parallel_df <- prov_multi %>% select(provinsi, all_of(num_cols))
+multi_shared <- SharedData$new(parallel_df, key = ~provinsi, group = "multivariate")
+
+dims <- lapply(num_cols, function(nm) list(label = nm, values = parallel_df[[nm]]))
+p <- plot_ly(multi_shared, type = "parcoords", dimensions = dims,
+             line = list(color = ~as.numeric(factor(provinsi))))
+p %>%
+  layout(
+    title = list(text = "Parallel coordinates · delapan indikator dalam satu pandangan", font = list(color = "#f2f4f7")),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5"),
+    margin = list(l = 40, r = 40, t = 60, b = 25)
+  )
+```
+:::
+
+<div class="interaction-note"><span>INTERAKSI</span> Pada tampilan multivariat, pilih/brush titik untuk memusatkan perhatian pada provinsi tertentu. PCA dan parallel coordinates menggunakan grup provinsi yang sama untuk mendukung brushing/linking.</div>
+<div class="source-inline">Sumber: BPS · 38 provinsi · 8 variabel numerik</div>
+
+::: {.viz-frame}
+```{r}
+# Heatmap terklaster.
+# Satu sel = posisi relatif (z-score) satu provinsi pada satu variabel.
+gg <- ggplot(heat, aes(x = variabel, y = provinsi, fill = z)) +
+  geom_tile(color = "#111820", linewidth = 0.2) +
+  scale_fill_gradient2(low = "#67E8F9", mid = "#17212b", high = "#A8FF60", midpoint = 0) +
+  labs(x = NULL, y = NULL, fill = "z-score") +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1, color = "#b9c2cc"),
+    axis.text.y = element_text(color = "#b9c2cc", size = 7),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    legend.position = "right"
+  )
+
+ggplotly(gg, tooltip = c("x", "y", "fill")) %>%
+  layout(
+    title = list(text = "Heatmap · pola relatif antarprovinsi", font = list(color = "#f2f4f7")),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    margin = list(l = 90, r = 50, t = 55, b = 80)
+  )
+```
+:::
+
+<div class="source-inline">Sumber: BPS · Data 2025</div>
+
+<div class="insight-card accent-lime">
+  <div class="insight-label">CARA MEMBACA MULTIVARIAT</div>
+  <div class="insight-title">Dekat di PCA berarti profilnya lebih mirip, bukan otomatis lebih baik.</div>
+  <div class="insight-text">PC1 dan PC2 menyederhanakan delapan dimensi menjadi bidang dua dimensi. Parallel coordinates mempertahankan detail tiap indikator, sedangkan heatmap menunjukkan pola relatif. Ketiganya dipakai bersama agar reduksi dimensi tidak menjadi satu-satunya dasar interpretasi.</div>
+</div>
+
+# 06 · Kelompok dan pencilan
+
+## Ketika provinsi mulai membentuk pola
+
+Klasterisasi membantu menjawab pertanyaan yang berbeda dari pemeringkatan: **provinsi mana yang memiliki profil yang mirip?** Pencilan diberi tanda tersendiri karena observasi ekstrem dapat membawa informasi substantif, tetapi tidak boleh otomatis dianggap sebagai kesalahan data.
+
+::: {.viz-frame}
+```{r}
+cluster_plot <- pca_view %>%
+  mutate(
+    klaster = factor(klaster),
+    pencilan_label = ifelse(as.logical(pencilan), "Pencilan", "Reguler")
+  )
+
+plot_ly(
+  cluster_plot,
+  x = ~PC1, y = ~PC2,
+  type = "scatter", mode = "markers+text",
+  text = ~provinsi,
+  textposition = "top center",
+  color = ~klaster,
+  symbol = ~pencilan_label,
+  symbols = c("circle", "diamond-open"),
+  marker = list(size = 11, opacity = 0.86),
+  hovertemplate = paste(
+    "<b>%{text}</b><br>PC1: %{x:.2f}<br>PC2: %{y:.2f}<br>",
+    "Klaster: %{marker.color}<extra></extra>"
+  )
+) %>%
+  layout(
+    title = list(text = "Kelompok provinsi · klaster dan pencilan", font = list(color = "#f2f4f7")),
+    xaxis = list(title = "PC1", zeroline = FALSE),
+    yaxis = list(title = "PC2", zeroline = FALSE),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5")
+  )
+```
+:::
+
+<div class="viz-frame">
+```{r}
+# Ringkasan ukuran klaster agar pembaca mengetahui skala masing-masing kelompok.
+cluster_size <- cluster_df %>% count(klaster, name = "jumlah")
+
+plot_ly(
+  cluster_size,
+  x = ~factor(klaster), y = ~jumlah,
+  type = "bar",
+  marker = list(color = "#A8FF60"),
+  hovertemplate = "Klaster %{x}<br>%{y} provinsi<extra></extra>"
+) %>%
+  layout(
+    title = list(text = "Ukuran setiap klaster", font = list(color = "#f2f4f7")),
+    xaxis = list(title = "Klaster"), yaxis = list(title = "Jumlah provinsi"),
+    paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+    font = list(color = "#d7dde5")
+  )
+```
+</div>
+
+<div class="source-inline">Sumber: BPS · Data 2025</div>
+
+<div class="insight-card accent-cyan">
+  <div class="insight-label">PENUTUP ANALISIS</div>
+  <div class="insight-title">Pola regional lebih berguna ketika dibaca bersama konteksnya.</div>
+  <div class="insight-text">Klaster bukan label “baik” atau “buruk”. Ia adalah cara merangkum kemiripan profil. Pencilan juga bukan otomatis kesalahan; ia adalah sinyal untuk ditinjau lebih lanjut dengan konteks indikator dan sumber data.</div>
+</div>
+
+# 07 · Yang perlu dibawa pulang
+
+::: {.closing-section}
+<div class="closing-kicker">TIGA LAPIS PEMBACAAN</div>
+
+<div class="closing-grid">
+<div><span>01</span><h3>Wilayah</h3><p>Hierarki memperlihatkan bagaimana Indonesia tersusun dari kelompok pulau, provinsi, hingga kabupaten/kota.</p></div>
+<div><span>02</span><h3>Ruang</h3><p>Peta memperlihatkan bahwa risiko tidak tersebar merata dan dapat muncul berbeda dari skala populasi balita.</p></div>
+<div><span>03</span><h3>Profil</h3><p>Delapan indikator membantu membaca karakteristik provinsi di balik posisi mereka dalam ruang multivariat.</p></div>
+</div>
+
+<div class="closing-statement">Sebelum usia lima, satu angka tidak cukup. <strong>Kita perlu tahu di mana angkanya berada, berapa banyak anak yang hidup di sana, dan karakteristik apa yang berjalan bersamanya.</strong></div>
+</div>
+:::
+
+# Sumber data
+
+<div class="source-grid">
+```{r}
+# Kartu sumber dibuat langsung dari metadata hasil pengolahan.
+for (i in seq_len(nrow(metadata_text))) {
+  cat(paste0(
+    '<div class="source-card">',
+    '<div class="source-index">0', i, '</div>',
+    '<div class="source-title">', htmltools::htmlEscape(metadata_text$judul_tabel[i]), '</div>',
+    '<div class="source-meta">Tahun: ', htmltools::htmlEscape(metadata_text$tahun[i]), '</div>',
+    '<div class="source-meta">URL: ', htmltools::htmlEscape(metadata_text$url[i]), '</div>',
+    '<div class="source-meta">Tanggal akses: ', htmltools::htmlEscape(metadata_text$tanggal_akses[i]), '</div>',
+    '<div class="source-footer">Sumber utama: BPS</div>',
+    '</div>'
+  ))
+}
+```
+</div>
+
+<div class="footer-note">
+<strong>Catatan metodologis.</strong> Data utama berasal dari BPS. Batas wilayah digital digunakan sebagai data pendukung untuk kebutuhan geospasial. Visualisasi mengikuti prinsip: posisi dan panjang untuk perbandingan, ukuran untuk jumlah, warna untuk indikator kontinu/kategori, serta tooltip untuk detail yang tidak perlu dibebankan ke tampilan utama. Penggunaan alat bantu AI dalam pengembangan proyek perlu dideklarasikan pada bagian metodologi makalah sesuai ketentuan UAS.
+</div>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --bg: #080b0f;
+  --bg2: #0d1218;
+  --panel: #111820;
+  --panel2: #151d26;
+  --text: #f2f4f7;
+  --muted: #9aa6b4;
+  --line: #27313c;
+  --lime: #a8ff60;
+  --cyan: #67e8f9;
+  --warm: #f3c969;
+}
+
+html { scroll-behavior: smooth; background: var(--bg); }
+body {
+  background:
+    radial-gradient(circle at 15% 5%, rgba(103,232,249,.07), transparent 28rem),
+    radial-gradient(circle at 90% 25%, rgba(168,255,96,.05), transparent 30rem),
+    var(--bg);
+  color: var(--text);
+  font-family: 'Manrope', system-ui, sans-serif;
+  line-height: 1.72;
+}
+
+#quarto-content { max-width: 1280px; margin: auto; padding: 0 3vw 8rem; }
+.quarto-title-block { display:none; }
+h1, h2, h3 { color: var(--text); letter-spacing: -.035em; }
+h1 { font-size: clamp(3.8rem, 9vw, 8.5rem); line-height: .9; font-weight: 800; }
+h2 { font-size: clamp(2rem, 4vw, 4rem); margin-top: 5rem; }
+h3 { font-size: 1.4rem; }
+p { color: var(--muted); }
+strong { color: var(--text); }
+
+.hero-section {
+  min-height: 92vh;
+  display:flex;
+  align-items:center;
+  padding: 7rem 0 5rem;
+}
+.hero-grid { width:100%; display:grid; grid-template-columns: 1.5fr .7fr; gap: 7vw; align-items:end; }
+.eyebrow, .micro, .insight-label, .closing-kicker, .metric-label, .interaction-note span, .scroll-cue {
+  font-family:'DM Mono', monospace; text-transform:uppercase; letter-spacing:.14em; font-size:.72rem; color:var(--muted);
+}
+.hero-section h1 span { color:var(--lime); }
+.hero-deck { max-width: 720px; font-size: clamp(1.05rem, 1.7vw, 1.35rem); margin-top: 2rem; }
+.scroll-cue { margin-top: 4rem; color:var(--lime); }
+.scroll-cue span { font-size:1.4rem; margin-left:.5rem; }
+.hero-stat-card { border:1px solid var(--line); background:rgba(17,24,32,.72); padding:2rem; border-radius:24px; box-shadow:0 25px 80px rgba(0,0,0,.3); }
+.hero-number { font-size: clamp(3rem, 6vw, 5.5rem); line-height:1; font-weight:800; color:var(--cyan); margin:.7rem 0; }
+.hero-unit, .hero-small { color:var(--muted); }
+.hero-rule { height:1px; background:var(--line); margin:1.5rem 0; }
+
+.story-note { max-width:850px; margin:0 auto 8rem; padding:2rem 0 2rem 2rem; border-left:2px solid var(--lime); font-size:1.1rem; }
+.viz-frame { background:rgba(13,18,24,.68); border:1px solid var(--line); border-radius:22px; padding:1.1rem; margin:2rem 0; overflow:hidden; box-shadow:0 18px 70px rgba(0,0,0,.18); }
+.viz-frame.compact { margin-top:1rem; }
+.insight-card { margin:3rem 0 7rem; padding:1.6rem 1.8rem; background:linear-gradient(135deg, rgba(17,24,32,.94), rgba(11,15,20,.94)); border:1px solid var(--line); border-radius:18px; }
+.insight-card.accent-lime { border-left:3px solid var(--lime); }
+.insight-card.accent-cyan { border-left:3px solid var(--cyan); }
+.insight-title { font-size:1.45rem; font-weight:700; margin:.3rem 0 .5rem; }
+.insight-text { color:var(--muted); max-width:850px; }
+.interaction-note { color:#8e9aaa; font-size:.85rem; margin:-.5rem 0 1rem; }
+.source-inline { color:#697685; font-family:'DM Mono',monospace; font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; margin:.25rem 0 2.5rem; }
+.interaction-note span { color:var(--cyan); margin-right:.5rem; }
+
+.metric-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line); border:1px solid var(--line); margin:1.5rem 0 4rem; }
+.metric-strip > div { background:var(--panel); padding:1.25rem; }
+.metric-strip strong { display:block; font-size:1.35rem; margin-top:.2rem; }
+
+.closing-section { padding:3rem 0 7rem; }
+.closing-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1rem; margin:2rem 0 5rem; }
+.closing-grid > div { border-top:1px solid var(--line); padding:1.5rem 0; }
+.closing-grid span { color:var(--lime); font-family:'DM Mono',monospace; }
+.closing-grid h3 { margin:.7rem 0 .2rem; }
+.closing-statement { font-size:clamp(1.5rem,3vw,2.6rem); line-height:1.25; max-width:900px; color:#cbd3dc; }
+
+.source-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1rem; margin:2rem 0; }
+.source-card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:1.4rem; }
+.source-index { font-family:'DM Mono',monospace; color:var(--lime); font-size:.75rem; }
+.source-title { font-weight:700; margin:.5rem 0; }
+.source-meta { color:var(--muted); font-size:.82rem; word-break:break-word; }
+.source-footer { color:var(--cyan); font-family:'DM Mono',monospace; font-size:.72rem; margin-top:1rem; }
+.footer-note { border-top:1px solid var(--line); padding-top:1.5rem; color:#788492; font-size:.82rem; }
+
+.leaflet-container { background:#080b0f; font-family:'Manrope',sans-serif; }
+.leaflet-control { border-radius:10px !important; overflow:hidden; }
+.leaflet-control-layers, .leaflet-control-zoom, .info.legend { background:rgba(17,24,32,.94) !important; color:#d7dde5 !important; border:1px solid #27313c !important; }
+.leaflet-control-layers label, .leaflet-control-layers-selector { color:#d7dde5; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background:#111820; color:#e8edf2; }
+.leaflet-popup-content { font-family:'Manrope',sans-serif; }
+
+.plotly { border-radius:14px; }
+.plotly .modebar { opacity:.35; }
+
+@media (max-width: 900px) {
+  .hero-grid { grid-template-columns:1fr; gap:3rem; }
+  .hero-section { min-height:auto; padding-top:4rem; }
+  .metric-strip { grid-template-columns:repeat(2,1fr); }
+  .closing-grid, .source-grid { grid-template-columns:1fr; }
+}
+@media (max-width: 600px) {
+  #quarto-content { padding:0 1rem 5rem; }
+  h1 { font-size:clamp(3.2rem, 18vw, 5rem); }
+  h2 { margin-top:3.5rem; }
+  .hero-stat-card { padding:1.4rem; }
+  .story-note { margin-bottom:4rem; }
+  .viz-frame { border-radius:14px; padding:.45rem; }
+  .metric-strip { grid-template-columns:1fr 1fr; }
+}
+
+/* Menyembunyikan elemen Quarto yang tidak diperlukan untuk pengalaman story. */
+#quarto-margin-sidebar, #quarto-sidebar, .navbar { display:none !important; }
+</style>
+
+<script>
+// Interaksi kecil untuk pengalaman story: progress bar dan reveal saat scroll.
+document.addEventListener('DOMContentLoaded', () => {
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0;background:#a8ff60;z-index:99999;transition:width .08s linear;';
+  document.body.appendChild(bar);
+  const update = () => {
+    const h = document.documentElement.scrollHeight - window.innerHeight;
+    bar.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + '%';
+  };
+  window.addEventListener('scroll', update, {passive:true});
+  update();
+});
+</script>

@@ -1,0 +1,20 @@
+cek,status,detail
+hierarki_final = 514 baris,LULUS,514
+tanpa duplikat kunci kab/kota,LULUS,
+tanpa NA pada u5mr dan balita,LULUS,
+38 provinsi,LULUS,38
+7 kelompok pulau,LULUS,7
+tiap kab/kota punya pulau,LULUS,
+sum(balita) == baris INDONESIA (Data 2),LULUS,22752569 vs 22752569
+"balita per provinsi == Data 2 (kecuali PAPUA, PAPUA BARAT)",LULUS,0 provinsi berselisih
+pengecualian dicatat: PAPUA & PAPUA BARAT memakai batas provinsi lama di Data 2,LULUS,PAPUA (selisih -353659); PAPUA BARAT (selisih -65767)
+U5MR provinsi Data 1 identik dengan multivariat (38 provinsi),LULUS,38 provinsi dibandingkan
+"multivariat: 38 provinsi, 8 variabel, tanpa NA",LULUS,
+semua provinsi multivariat terpetakan ke Data 1,LULUS,
+geojson final = 514 fitur,LULUS,514
+tiap kab/kota tergabung tepat sekali ke geojson,LULUS,
+u5mr & balita di geojson identik dengan hierarki_final,LULUS,
+jenis (Kota/Kabupaten) konsisten antara Data 1 dan geojson,LULUS,98 kota
+tidak ada geometri kosong,LULUS,
+ukuran geojson <= 2.0 MB,LULUS,0.64 MB
+centroid: 514 titik,LULUS,

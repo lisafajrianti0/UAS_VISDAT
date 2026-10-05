@@ -1,0 +1,776 @@
+---
+pagetitle: "Kematian pada Balita — Peta Kematian Balita Indonesia"
+lang: id
+format:
+  html:
+    theme: [darkly, custom.scss]
+    page-layout: full
+    toc: false
+    smooth-scroll: true
+    anchor-sections: false
+    embed-resources: true
+    include-after-body: _story.html
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(sf)
+  library(leaflet); library(plotly); library(crosstalk); library(DT); library(htmltools); library(spdep)
+})
+sf_use_s2(FALSE)
+
+# ---------- Helper ----------
+nm <- function(x) {                       # "DI YOGYAKARTA" -> "DI Yogyakarta"
+  x <- sub("^D I ", "DI ", x)
+  x <- tools::toTitleCase(tolower(x))
+  x <- sub("^Di ", "DI ", x); sub("^Dki ", "DKI ", x)
+}
+fmt <- function(x, d = 1) formatC(x, format = "f", digits = d, big.mark = ".", decimal.mark = ",")
+w_mean <- function(x, w) sum(x * w) / sum(w)
+join_id <- function(x) {                  # "a, b, dan c"
+  x <- as.character(x); n <- length(x)
+  if (n <= 1) x else paste0(paste(x[-n], collapse = ", "), " dan ", x[n])
+}
+
+# ---------- Tema & palet (ramah buta warna) ----------
+bg   <- "#0b1020"; fg <- "#d7def0"; grid <- "rgba(255,255,255,.08)"
+pal_u5 <- c("#ffffb2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026")  # ColorBrewer YlOrRd 5 kelas (sekuensial)
+div_cs <- list(c(0, "#2c7bb6"), c(.5, "#4a5578"), c(1, "#fdae61"))  # biru-oranye (divergen)
+font_fam <- "Inter, system-ui, sans-serif"
+
+dark_layout <- function(p, ...) {
+  layout(p, paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+         font = list(color = fg, family = font_fam, size = 11), ...)
+}
+ax <- function(title = NULL, ...) list(title = title, gridcolor = grid, zerolinecolor = "rgba(255,255,255,.25)",
+                                       linecolor = grid, ...)
+
+# ---------- Data ----------
+prov <- readRDS("data/provinsi_multivariat.rds")
+hier <- read_csv("data/hierarki_final.csv", show_col_types = FALSE)
+geo  <- st_read("data/kabkota_geo.geojson", quiet = TRUE) |>
+  mutate(u5mr = as.numeric(u5mr), balita = as.numeric(balita))
+cen  <- readRDS("data/centroid_kabkota.rds") |> st_drop_geometry() |> arrange(desc(balita))
+pc   <- readRDS("data/hasil_pca.rds")
+kl   <- readRDS("data/hasil_klaster.rds")
+# Baca CSV dengan deteksi encoding (file hasil simpan Excel sering berupa Windows-1252, bukan UTF-8)
+read_csv_auto <- function(path) {
+  enc <- if (validUTF8(rawToChar(readr::read_file_raw(path)))) "UTF-8" else "WINDOWS-1252"
+  read_csv(path, show_col_types = FALSE, locale = locale(encoding = enc))
+}
+meta <- read_csv_auto("data/metadata_sumber.csv")
+
+vars <- c("AKK", "AKB", "AKABA", "AKA", "Kemiskinan", "TPT", "Sanitasi", "AirMinum")
+
+# ---------- Bagian 0: nilai ekstrem provinsi ----------
+lo <- prov |> slice_min(AKABA, n = 1, with_ties = FALSE)
+hi <- prov |> slice_max(AKABA, n = 1, with_ties = FALSE)
+ratio <- hi$AKABA / lo$AKABA
+
+# ---------- Kelas peta (memakai kelas_jenks / kelas_kuantil dari hasil olah data) ----------
+cls <- function(col) {
+  geo |> st_drop_geometry() |>
+    group_by(k = .data[[col]]) |>
+    summarise(lo = min(u5mr), hi = max(u5mr), n = n(), .groups = "drop") |> arrange(k)
+}
+cj <- cls("kelas_jenks"); cq <- cls("kelas_kuantil")
+leg <- function(tb) sprintf("%s – %s  (%d daerah)", fmt(tb$lo, 1), fmt(tb$hi, 1), tb$n)
+top5  <- geo |> st_drop_geometry() |> filter(kelas_jenks == max(kelas_jenks))
+top_txt <- top5 |> count(provinsi, sort = TRUE) |> head(3) |>
+  mutate(t = paste0(nm(provinsi), " (", n, ")")) |> pull(t) |> join_id()
+
+# ---------- Hierarki ----------
+h <- hier |> mutate(u5mr = as.numeric(u5mr), balita = as.numeric(balita))
+lv3 <- h |> transmute(id = paste(pulau, provinsi, label, sep = "|"), parent = paste(pulau, provinsi, sep = "|"),
+                      label = label, balita, u5mr)
+lv2 <- h |> group_by(pulau, provinsi) |>
+  summarise(u5mr = w_mean(u5mr, balita), balita = sum(balita), .groups = "drop") |>
+  transmute(id = paste(pulau, provinsi, sep = "|"), parent = as.character(pulau), label = nm(provinsi), balita, u5mr)
+lv1 <- h |> group_by(pulau) |>
+  summarise(u5mr = w_mean(u5mr, balita), balita = sum(balita), .groups = "drop") |>
+  transmute(id = as.character(pulau), parent = "Indonesia", label = as.character(pulau), balita, u5mr)
+root <- tibble(id = "Indonesia", parent = "", label = "Indonesia", balita = sum(h$balita), u5mr = w_mean(h$u5mr, h$balita))
+nodes <- bind_rows(root, lv1, lv2, lv3)
+pul <- lv1 |> mutate(pct = balita / sum(balita))
+pul_big <- pul |> slice_max(balita, n = 1); pul_hot <- pul |> slice_max(u5mr, n = 1)
+cs_u5 <- Map(function(a, b) list(a, b), seq(0, 1, length.out = 5), pal_u5)
+cmin <- floor(min(h$u5mr)); cmax <- ceiling(max(h$u5mr))
+
+# ---------- Multivariat: PCA + klaster (hasil olah data) ----------
+rg <- as_tibble(kl$ringkas)
+rk <- rank(-rg$AKABA, ties.method = "first")                      # 1 = U5MR tertinggi
+cl_names <- setNames(paste0("Klaster ", rg$klaster,
+                    ifelse(rk == 1, " · U5MR tertinggi", ifelse(rk == nrow(rg), " · U5MR terendah", ""))), rg$klaster)
+cl_cols <- setNames(ifelse(rk == 1, "#E69F00", ifelse(rk == nrow(rg), "#56B4E9",
+                    c("#009E73", "#CC79A7", "#F0E442")[pmin(pmax(rk - 1, 1), 3)])), cl_names)   # Okabe-Ito
+lv_cl <- unname(cl_names[as.character(rg$klaster[order(rk)])])
+
+d <- as_tibble(kl$tabel) |>
+  left_join(select(prov, provinsi, all_of(vars)), by = "provinsi") |>
+  mutate(prov_nm = nm(provinsi),
+         kl = factor(unname(cl_names[as.character(klaster)]), levels = lv_cl))
+ve <- pc$varians$proporsi
+ld <- pc$loading
+pos1 <- ld$variabel[ld$PC1 >  .3]; neg1 <- ld$variabel[ld$PC1 < -.3]
+dom2 <- ld$variabel[abs(ld$PC2) > .5]
+cr <- sapply(c("Kemiskinan", "TPT", "Sanitasi", "AirMinum"), function(v) cor(prov$AKABA, prov[[v]]))
+kuat <- function(r) ifelse(abs(r) >= .6, "kuat", ifelse(abs(r) >= .3, "sedang", "lemah"))
+arah <- function(r) ifelse(r < 0, "berlawanan arah", "searah")
+rg_hi <- rg |> slice_max(AKABA, n = 1); rg_lo <- rg |> slice_min(AKABA, n = 1)
+mem_hi <- d |> filter(as.integer(as.character(klaster)) == rg_hi$klaster) |> pull(prov_nm)
+out_pos <- d |> filter(pencilan, PC1 > 0) |> pull(prov_nm)
+out_neg <- d |> filter(pencilan, PC1 < 0) |> pull(prov_nm)
+sil_best <- max(kl$silhouette$silhouette_rata2)
+
+# ---------- Temuan geospasial untuk narasi ----------
+share5  <- sum(cen$balita[cen$kelas_jenks == max(cen$kelas_jenks)]) / sum(cen$balita)
+share45 <- sum(cen$balita[cen$kelas_jenks >= max(cen$kelas_jenks) - 1]) / sum(cen$balita)
+share12 <- sum(cen$balita[cen$kelas_jenks <= 2]) / sum(cen$balita)
+# ---------- Dumbbell: rentang kab/kota dalam provinsi ----------
+rng <- geo |> st_drop_geometry() |> group_by(provinsi) |>
+  summarise(lo_k = min(u5mr), hi_k = max(u5mr), wm = w_mean(u5mr, balita),
+            lab_lo = label[which.min(u5mr)], lab_hi = label[which.max(u5mr)], .groups = "drop") |>
+  mutate(rentang = hi_k - lo_k, prov_nm = nm(provinsi)) |> arrange(wm)
+wid <- slice_max(rng, rentang, n = 1, with_ties = FALSE)
+med_wm <- median(rng$wm); n_over <- sum(rng$hi_k > med_wm); n_prov <- nrow(rng)
+p_best <- slice_min(rng, wm, n = 1, with_ties = FALSE); p_worst <- slice_max(rng, wm, n = 1, with_ties = FALSE)
+overlap <- p_best$hi_k > p_worst$lo_k
+
+# ---------- Konsentrasi spasial kelas tertinggi ----------
+top3n <- top5 |> count(provinsi, sort = TRUE) |> head(3); top3_share <- sum(top3n$n) / nrow(top5)
+top_pulau <- top5 |> mutate(pulau = as.character(pulau)) |> count(pulau, sort = TRUE) |> slice(1)
+share_pulau <- top_pulau$n / nrow(top5)
+top_q <- geo |> st_drop_geometry() |> filter(kelas_kuantil == max(kelas_kuantil))
+pap_q <- mean(as.character(top_q$pulau) == top_pulau$pulau)
+
+# ---------- Konsentrasi balita ----------
+prov_b <- lv2 |> arrange(desc(balita)) |> mutate(cum = cumsum(balita) / sum(balita))
+pul_top2 <- pul |> arrange(desc(balita)) |> head(2); top3_prov_share <- sum(head(prov_b$balita, 3)) / sum(prov_b$balita)
+n50 <- which(prov_b$cum >= .5)[1]; top_prov_names <- join_id(head(prov_b$label, 3))
+
+# ---------- Pengecualian: kemiskinan vs klaster U5MR ----------
+miskin_tinggi_bukan <- d |> filter(Kemiskinan >= quantile(Kemiskinan, .75), as.integer(as.character(klaster)) != rg_hi$klaster) |> pull(prov_nm)
+klaster_tinggi_miskin_rendah <- d |> filter(as.integer(as.character(klaster)) == rg_hi$klaster, Kemiskinan < median(Kemiskinan)) |> pull(prov_nm)
+# ---------- Matriks prioritas (target SDG 3.2: U5MR <= 25) ----------
+gd <- geo |> st_drop_geometry() |> mutate(prio = u5mr > 25 & balita >= quantile(balita, .75),
+                                         grp = ifelse(prio, "Prioritas", "Lainnya"))
+q75 <- quantile(gd$balita, .75); n_prio <- sum(gd$prio); sh_prio <- sum(gd$balita[gd$prio]) / sum(gd$balita)
+n_above <- sum(gd$u5mr > 25); sh_above <- sum(gd$balita[gd$u5mr > 25]) / sum(gd$balita)
+hi35 <- gd |> filter(u5mr > 35); n35 <- nrow(hi35); pap35 <- mean(as.character(hi35$pulau) == top_pulau$pulau)
+top10 <- gd |> filter(prio) |> arrange(desc(u5mr * balita)) |> head(10)
+# ---------- Profil di dalam/antar klaster ----------
+mem_raw <- d$provinsi[as.integer(as.character(d$klaster)) == rg_hi$klaster]
+pulau_hi <- unique(as.character(d$pulau[d$provinsi %in% mem_raw]))
+zak <- pc$z[, "AKABA"]
+top2_raw <- names(sort(zak[names(zak) %in% mem_raw], decreasing = TRUE))[seq_len(min(2, length(mem_raw)))]
+top2_san_low <- all(pc$z[top2_raw, "Sanitasi"] < 0)
+hetero <- nm(names(zak)[zak > .5 & !(names(zak) %in% mem_raw)])
+big45 <- cen |> filter(kelas_jenks >= max(kelas_jenks) - 1) |> slice_max(balita, n = 3) |> pull(label) |> join_id()
+
+# ---------- Autokorelasi spasial: Moran's I global + LISA ----------
+# Bobot: 5 tetangga terdekat (jarak antar-sentroid), karena banyak daerah kepulauan tidak berbatasan langsung.
+xy   <- st_coordinates(st_centroid(st_geometry(geo)))
+lw_k <- function(k) nb2listw(knn2nb(knearneigh(xy, k = k, longlat = TRUE)), style = "W")
+lw5  <- lw_k(5)
+set.seed(2026)
+nsim <- 999
+mi   <- moran.mc(geo$u5mr, lw5, nsim = nsim)
+mor_k <- function(k) { l <- lw_k(k); moran(geo$u5mr, l, length(geo$u5mr), Szero(l))$I }
+mi_rng <- range(sapply(c(3, 5, 8), mor_k))
+mi_p   <- if (mi$p.value <= .001) "p ≤ 0,001" else paste0("p = ", fmt(mi$p.value, 3))
+mi_msg <- if (mi$p.value < .05 && mi$statistic > 0) {
+  "sehingga daerah ber-U5MR tinggi cenderung bertetangga dengan daerah ber-U5MR tinggi, bukan secara kebetulan"
+} else if (mi$p.value < .05) {
+  "yang berarti daerah ber-U5MR tinggi cenderung bertetangga dengan daerah ber-U5MR rendah"
+} else "sehingga pengelompokan pada peta tidak dapat dipastikan signifikan secara statistik"
+
+zu   <- as.numeric(scale(geo$u5mr))
+lagz <- as.numeric(lag.listw(lw5, zu))
+lsa  <- localmoran(geo$u5mr, lw5)
+p_l  <- lsa[, grep("^Pr", colnames(lsa))[1]]
+lbl  <- c(hh = "Hotspot (tinggi–tinggi)", ll = "Coldspot (rendah–rendah)",
+          hl = "Pencilan tinggi (tinggi–rendah)", lh = "Pencilan rendah (rendah–tinggi)", ns = "Tidak signifikan")
+pal_lisa <- setNames(c("#D55E00", "#0072B2", "#E69F00", "#56B4E9", "#26325f"), unname(lbl))   # Okabe-Ito
+lisa_cl <- ifelse(p_l >= .05, lbl[["ns"]],
+           ifelse(zu > 0 & lagz > 0, lbl[["hh"]],
+           ifelse(zu < 0 & lagz < 0, lbl[["ll"]],
+           ifelse(zu > 0, lbl[["hl"]], lbl[["lh"]]))))
+geo$lisa <- factor(lisa_cl, levels = unname(lbl))
+n_hh <- sum(geo$lisa == lbl[["hh"]]); n_ll <- sum(geo$lisa == lbl[["ll"]])
+n_out <- sum(geo$lisa %in% c(lbl[["hl"]], lbl[["lh"]])); n_ns <- sum(geo$lisa == lbl[["ns"]])
+top_prov <- function(l) geo |> st_drop_geometry() |> filter(lisa == l) |> count(provinsi, sort = TRUE) |>
+  head(3) |> pull(provinsi) |> nm() |> join_id()
+hh_prov <- if (n_hh > 0) top_prov(lbl[["hh"]]) else ""
+ll_prov <- if (n_ll > 0) top_prov(lbl[["ll"]]) else ""
+```
+
+::: {#s-hero .hero}
+::: {.hero-inner}
+[Visualisasi Data dan Informasi · UAS 2026]{.kicker}
+
+# Kematian pada Balita {.hero-title}
+
+::: {.hero-sub}
+Lima tahun pertama seharusnya menjadi awal kehidupan. Tapi tidak semua anak memiliki peluang yang sama untuk mencapainya.
+:::
+
+[Bergantung pada tempat lahirnya, risiko seorang anak Indonesia meninggal sebelum usia lima tahun dapat berbeda hingga `r fmt(ratio, 1)` kali lipat antarprovinsi. Analisis ini menelusuri lokasi risiko tersebut, jumlah anak yang terdampak, dan faktor yang menyertainya.]{.hero-key}
+
+[Lisa Fajrianti · 222313174 · Politeknik Statistika STIS · Sumber data: BPS]{.byline}
+
+[↓]{.scrollcue}
+:::
+:::
+
+::: {#s0 .story-section .reveal data-title="Gambaran"}
+[00 · Titik awal]{.kicker}
+
+## Di satu provinsi yang sama, nasib anak bisa sangat berbeda
+
+::: {.split}
+::: {.split-text}
+Antarprovinsi, U5MR tertinggi (**`r nm(hi$provinsi)`**, `r fmt(hi$AKABA, 1)`) mencapai **`r fmt(ratio, 1)` kali lipat** terendah (**`r nm(lo$provinsi)`**, `r fmt(lo$AKABA, 1)`) per 1.000 kelahiran hidup. Namun jurang terlebar justru ada di dalam provinsi: di **`r nm(wid$provinsi)`**, U5MR berkisar dari `r fmt(wid$lo_k, 1)` (`r wid$lab_lo`) hingga `r fmt(wid$hi_k, 1)` (`r wid$lab_hi`). Secara keseluruhan, **`r n_above` dari `r nrow(geo)` kab/kota** masih di atas target SDG 3.2 (U5MR ≤ 25, garis kuning).
+
+::: {.howto}
+**Cara membaca.** Setiap baris = satu provinsi, diurutkan dari rerata U5MR terendah (bawah) ke tertinggi (atas). Posisi horizontal = U5MR; titik biru = kab/kota terendah, jingga = tertinggi, belah ketupat putih = rerata provinsi (tertimbang jumlah balita). Garis penghubung memperlihatkan *jarak*, sehingga ketimpangan dalam provinsi terbaca langsung sebagai panjang batang. Arahkan kursor/ketuk untuk melihat nama daerahnya.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kabupaten/Kota (SUPAS 2025); Jumlah Penduduk Kelompok Umur 0–4 (2025). Target SDG 3.2: PBB (non-BPS).]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz .wipe}
+```{r}
+#| label: dumbbell
+r2 <- rng |> mutate(prov_nm = factor(prov_nm, levels = prov_nm))
+yl <- as.character(r2$prov_nm)
+plot_ly(height = 680) |>
+  add_segments(data = r2, x = ~lo_k, xend = ~hi_k, y = ~prov_nm, yend = ~prov_nm,
+               line = list(color = "rgba(255,255,255,.35)", width = 3), hoverinfo = "skip", showlegend = FALSE) |>
+  add_markers(data = r2, x = ~lo_k, y = ~prov_nm, name = "Kab/kota terendah", text = ~lab_lo,
+              marker = list(color = "#56B4E9", size = 9, line = list(color = bg, width = 1)),
+              hovertemplate = "<b>%{y}</b><br>Terendah: %{text}<br>U5MR %{x:.1f}<extra></extra>") |>
+  add_markers(data = r2, x = ~hi_k, y = ~prov_nm, name = "Kab/kota tertinggi", text = ~lab_hi,
+              marker = list(color = "#E69F00", size = 9, line = list(color = bg, width = 1)),
+              hovertemplate = "<b>%{y}</b><br>Tertinggi: %{text}<br>U5MR %{x:.1f}<extra></extra>") |>
+  add_markers(data = r2, x = ~wm, y = ~prov_nm, name = "Rerata provinsi (tertimbang balita)",
+              marker = list(color = "#ffffff", size = 7, symbol = "diamond"),
+              hovertemplate = "<b>%{y}</b><br>Rerata tertimbang %{x:.1f}<extra></extra>") |>
+  dark_layout(
+    xaxis = ax("U5MR (per 1.000 kelahiran hidup)", rangemode = "tozero"),
+    shapes = list(list(type = "line", x0 = 25, x1 = 25, y0 = 0, y1 = 1, yref = "paper", line = list(color = "#fbbf24", dash = "dot", width = 1.5))),
+    yaxis = list(categoryorder = "array", categoryarray = yl, gridcolor = "rgba(255,255,255,.05)", tickfont = list(size = 10)),
+    legend = list(orientation = "h", x = 0, y = 1.1),
+    annotations = list(list(x = 25, y = 1, yref = "paper", xanchor = "left", yanchor = "bottom", showarrow = FALSE, text = "<b>Target SDG 2030: 25</b>", font = list(color = "#fbbf24", size = 11)), list(x = wid$hi_k, y = as.character(wid$prov_nm), xshift = 10, xanchor = "left", showarrow = FALSE,
+                            text = "<b>rentang terlebar</b>", font = list(color = "#fbbf24", size = 11))),
+    margin = list(l = 120, r = 20, t = 75, b = 45)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+:::
+
+
+[Jurang sebesar ini sulit dibaca hanya dari angka. Peta akan memperlihatkan di mana letaknya.]{.bridge}
+:::
+
+::: {#s1 .story-section .reveal data-title="Di mana?"}
+[01 · Peta risiko]{.kicker}
+
+## Risiko tertinggi ternyata berkumpul, bukan tersebar
+
+::: {.split}
+::: {.split-text}
+`r nrow(top5)` daerah masuk kelas U5MR tertinggi (≥ `r fmt(min(top5$u5mr), 1)`), dan **`r fmt(100 * top3_share, 0)`%** di antaranya berada di tiga provinsi: `r top_txt`. Ganti metode klasifikasi di kanan atas untuk menguji ketahanan pola ini.
+
+::: {.howto}
+**Cara membaca.** Warna = U5MR (rasio per 1.000 kelahiran, bukan angka absolut), dari kuning pucat (rendah) ke merah tua (tinggi); palet sekuensial ColorBrewer yang aman bagi penderita buta warna. Ganti klasifikasi di kanan atas: *natural breaks* mencari jeda alami pada data, sedangkan *kuantil* memaksa tiap kelas berisi jumlah daerah yang sama. Pola peta bergantung pada pilihan ini, jadi keduanya disediakan. Arahkan kursor/ketuk untuk melihat rincian; cubit atau gulir untuk zoom.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kabupaten/Kota (SUPAS 2025); batas wilayah digital kab/kota 2025.]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz}
+```{r}
+#| label: peta-choropleth
+tip <- function(d) lapply(sprintf(
+  "<div class='tt'><b>%s</b><span>%s · %s</span><hr>U5MR <b>%s</b> per 1.000 kelahiran<br>Balita <b>%s</b> jiwa<br>Peringkat nasional <b>%s</b> dari %d</div>",
+  d$label, nm(d$provinsi), as.character(d$pulau), fmt(d$u5mr, 1), fmt(d$balita, 0), d$peringkat_nasional, nrow(geo)), HTML)
+lab <- tip(geo)
+g_j <- "Natural breaks (Jenks)"; g_q <- "Kuantil (5 kelompok sama besar)"
+hl <- highlightOptions(color = "#ffffff", weight = 2, bringToFront = TRUE)
+
+m1 <- leaflet(geo, height = 430, options = leafletOptions(minZoom = 4)) |>
+  addPolygons(fillColor = pal_u5[geo$kelas_jenks], fillOpacity = .92, color = bg, weight = .35,
+              label = lab, group = g_j, highlightOptions = hl) |>
+  addPolygons(fillColor = pal_u5[geo$kelas_kuantil], fillOpacity = .92, color = bg, weight = .35,
+              label = lab, group = g_q, highlightOptions = hl) |>
+  addLegend("bottomright", colors = pal_u5, labels = leg(cj), opacity = 1,
+            title = "U5MR · Jenks<br><small>per 1.000 kelahiran</small>") |>
+  addLegend("bottomright", colors = pal_u5, labels = leg(cq), opacity = 1,
+            title = "U5MR · Kuantil<br><small>per 1.000 kelahiran</small>") |>
+  addLayersControl(baseGroups = c(g_j, g_q), position = "topright",
+                   options = layersControlOptions(collapsed = FALSE)) |>
+  setView(118, -2.5, 5)
+htmlwidgets::onRender(m1, r"---(function(el, x) {
+  var map = this;
+  function sync(name) {
+    el.querySelectorAll('.info.legend').forEach(function(d) {
+      var isQ = d.innerText.indexOf('Kuantil') > -1, wantQ = name.indexOf('Kuantil') > -1;
+      d.style.display = (isQ === wantQ) ? 'block' : 'none';
+    });
+  }
+  sync('Jenks');
+  map.on('baselayerchange', function(e) { sync(e.name); });
+})---")
+```
+:::
+:::
+:::
+
+
+::: {.method}
+::: {.mcard}
+**Natural breaks (Jenks)** · *mencari jeda alami*
+
+Kelas tertinggi sempit: hanya **`r tail(cj$n, 1)` daerah** (`r fmt(100 * tail(cj$n, 1) / nrow(geo), 1)`%) dengan U5MR `r fmt(tail(cj$lo, 1), 1)`–`r fmt(tail(cj$hi, 1), 1)`, `r fmt(100 * share_pulau, 0)`% di antaranya di `r top_pulau$pulau`. Kelas terendah memuat **`r cj$n[1]` daerah** (`r fmt(100 * cj$n[1] / nrow(geo), 0)`%), kuning pucat di Jawa dan sekitarnya. Risiko **ekstrem** terpusat di `r top_pulau$pulau`.
+:::
+::: {.mcard}
+**Kuantil** · *membagi daerah sama banyak*
+
+Kelas tertinggi dimulai dari U5MR `r fmt(tail(cq$lo, 1), 1)`, tidak jauh di atas target SDG (25), dan sangat lebar (`r fmt(tail(cq$lo, 1), 1)`–`r fmt(tail(cq$hi, 1), 1)`); hanya `r fmt(100 * pap_q, 0)`% anggotanya di `r top_pulau$pulau`. Risiko **di atas rata-rata** jauh lebih luas, juga di Sumatra, Kalimantan, Sulawesi, Maluku, dan Nusa Tenggara.
+:::
+:::
+
+### Apakah pengelompokan ini signifikan secara statistik?
+
+::: {.split}
+::: {.split-text}
+Moran's I untuk U5MR `r nrow(geo)` kabupaten/kota bernilai **`r fmt(mi$statistic, 2)`** (`r mi_p`), `r mi_msg`. LISA menemukan **`r n_hh` hotspot**`r if (n_hh > 0) paste0(", terutama di ", hh_prov) else ""` dan **`r n_ll` coldspot**`r if (n_ll > 0) paste0(", terutama di ", ll_prov) else ""`; `r n_ns` daerah (`r fmt(100 * n_ns / nrow(geo), 0)`%) tidak signifikan.
+
+::: {.tech data-sum="Detail teknis (Moran's I dan LISA)"}
+Bobot spasial memakai 5 tetangga terdekat berdasarkan jarak antar-sentroid (baris distandarkan), karena banyak daerah kepulauan tidak memiliki tetangga yang berbatasan langsung. Signifikansi Moran's I diuji dengan `r nsim` permutasi dan nilainya stabil terhadap jumlah tetangga (I = `r fmt(mi_rng[1], 2)`–`r fmt(mi_rng[2], 2)` untuk k = 3 sampai 8); `r n_out` daerah tergolong pencilan spasial. Signifikansi LISA memakai taraf α = 0,05 tanpa koreksi uji berganda sehingga bersifat eksploratif.
+:::
+
+::: {.howto}
+**Cara membaca.** Pada peta, warna menunjukkan jenis keterkaitan spasial tiap daerah: hotspot (U5MR tinggi dengan tetangga tinggi), coldspot (rendah dengan tetangga rendah), pencilan spasial (berbeda dari tetangganya), atau tidak signifikan. Pada diagram sebar Moran, sumbu horizontal adalah U5MR terstandar dan sumbu vertikal adalah rerata U5MR tetangga; kemiringan garis kuning sama dengan nilai Moran's I. Kuadran kanan-atas dan kiri-bawah menandakan daerah yang mirip dengan tetangganya. Arahkan kursor/ketuk untuk melihat rincian.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kabupaten/Kota (SUPAS 2025); batas wilayah digital kab/kota 2025. Pengolahan: penulis (paket spdep, R).]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz}
+```{r}
+#| label: peta-lisa
+lab_l <- lapply(sprintf(
+  "<div class='tt'><b>%s</b><span>%s</span><hr>U5MR <b>%s</b> per 1.000 kelahiran<br>Rerata U5MR tetangga (z) <b>%s</b><br>Kategori <b>%s</b></div>",
+  geo$label, nm(geo$provinsi), fmt(geo$u5mr, 1), fmt(lagz, 2), as.character(geo$lisa)), HTML)
+leaflet(geo, height = 430, options = leafletOptions(minZoom = 4)) |>
+  addPolygons(fillColor = unname(pal_lisa[as.character(geo$lisa)]), fillOpacity = .92, color = bg, weight = .35,
+              label = lab_l, highlightOptions = hl) |>
+  addLegend("bottomright", colors = unname(pal_lisa), opacity = 1,
+            labels = sprintf("%s  (%d daerah)", names(pal_lisa), as.integer(table(geo$lisa)[names(pal_lisa)])),
+            title = "Klaster spasial (LISA)<br><small>signifikan pada p &lt; 0,05</small>") |>
+  setView(118, -2.5, 5)
+```
+:::
+::: {.card-viz}
+```{r}
+#| label: moran-scatter
+ms <- tibble(zu = zu, lagz = lagz, kat = geo$lisa, label = geo$label, prov = nm(geo$provinsi))
+bz <- coef(lm(lagz ~ zu))
+plot_ly(ms, height = 340, x = ~zu, y = ~lagz, color = ~kat, colors = pal_lisa, type = "scatter", mode = "markers",
+        marker = list(size = 6, opacity = .85), text = ~paste0("<b>", label, "</b><br>", prov),
+        hovertemplate = "%{text}<br>U5MR (z) %{x:.2f}<br>Rerata tetangga (z) %{y:.2f}<extra></extra>") |>
+  add_lines(x = range(ms$zu), y = bz[1] + bz[2] * range(ms$zu), inherit = FALSE, showlegend = FALSE,
+            line = list(color = "#fbbf24", dash = "dot", width = 1.8), hoverinfo = "skip") |>
+  dark_layout(xaxis = ax("U5MR terstandar (z-score)"), yaxis = ax("Rerata U5MR tetangga (z-score)"),
+              title = list(text = sprintf("<b>Diagram sebar Moran</b> · I = %s", fmt(mi$statistic, 2)), x = .02, font = list(size = 14)),
+              showlegend = FALSE, margin = list(l = 55, r = 10, t = 40, b = 45)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+:::
+
+[Peta menunjukkan di mana risiko berada, tetapi belum berapa banyak anak yang hidup di sana. Itu yang kita telusuri berikutnya.]{.bridge}
+:::
+
+::: {#s2 .story-section .reveal data-title="Siapa?"}
+[02 · Tempat anak-anak tinggal]{.kicker}
+
+## Sebagian besar balita Indonesia tinggal di segelintir provinsi
+
+Pada treemap dan sunburst berikut, **luas kotak menyatakan jumlah balita** dan **warna menyatakan U5MR**, tersusun dalam tiga tingkat (pulau, provinsi, kabupaten/kota). `r join_id(pul_top2$label)` menampung **`r fmt(100 * sum(pul_top2$pct), 1)`%** balita, dan hanya **`r n50` dari `r nrow(lv2)` provinsi** diperlukan untuk menghimpun separuhnya. Blok terbesar berwarna kuning pucat (U5MR relatif rendah), sedangkan oranye hingga merah hanya pada kotak kecil, terutama di `r pul_hot$label`. Dengan demikian, jumlah anak terbesar berada di `r pul_big$label`.
+
+::: {.grid2}
+::: {.card-viz}
+```{r}
+#| label: treemap
+ht <- "<b>%{label}</b><br>Balita: %{value:,.0f} jiwa<br>U5MR (tertimbang): %{color:.1f}<extra></extra>"
+mk <- list(colors = nodes$u5mr, colorscale = cs_u5, cmin = cmin, cmax = cmax, showscale = TRUE,
+           colorbar = list(title = "U5MR", thickness = 10, len = .6, x = 1.02),
+           line = list(width = 1, color = bg))
+plot_ly(type = "treemap", height = 400, ids = nodes$id, labels = nodes$label, parents = nodes$parent,
+        values = nodes$balita, branchvalues = "total", maxdepth = 3, marker = mk,
+        pathbar = list(visible = TRUE, textfont = list(size = 13)), hovertemplate = ht, textinfo = "label") |>
+  dark_layout(margin = list(l = 0, r = 0, t = 6, b = 0)) |>
+  config(displaylogo = FALSE)
+```
+:::
+::: {.card-viz}
+```{r}
+#| label: sunburst
+plot_ly(type = "sunburst", height = 400, ids = nodes$id, labels = nodes$label, parents = nodes$parent,
+        values = nodes$balita, branchvalues = "total", maxdepth = 3, marker = mk,
+        hovertemplate = ht, insidetextorientation = "radial") |>
+  dark_layout(margin = list(l = 0, r = 0, t = 6, b = 0)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+
+::: {.howto}
+**Cara membaca.** Klik kotak (treemap) atau cincin (sunburst) untuk melakukan *drill-down*; jejak posisi ditampilkan pada bilah di atas treemap, dan klik pada pusat sunburst untuk kembali satu tingkat. Luas dipilih untuk menyatakan jumlah balita karena ukuran area paling mudah dibandingkan sebagai besaran jumlah, sedangkan warna dipakai untuk U5MR karena merupakan rasio. U5MR pulau dan provinsi dihitung ulang sebagai rerata tertimbang jumlah balita dari kabupaten/kota sehingga dapat berbeda dari angka resmi provinsi.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kab/Kota (SUPAS 2025) dan Jumlah Penduduk Kelompok Umur 0–4 menurut Kab/Kota (2025).]{.src}
+
+[Jumlah anak terpusat pada sedikit wilayah. Selanjutnya, jumlah tersebut dipertemukan dengan tingkat risiko untuk melihat apakah keduanya berada pada wilayah yang sama.]{.bridge}
+:::
+
+::: {#s3 .story-section .reveal data-title="Terdampak"}
+[03 · Risiko bertemu jumlah]{.kicker}
+
+## Risiko tertinggi dan jumlah anak terbanyak tidak selalu bertemu
+
+::: {.split}
+::: {.split-text}
+Setiap lingkaran adalah satu kab/kota (**ukuran = jumlah balita**, **warna = kelas U5MR**); awalnya hanya kelas berisiko tinggi tampil, kelas lain dapat diaktifkan di kanan atas. Dua kelas tertinggi hanya memuat **`r fmt(100 * share45, 1)`%** balita, sedangkan **`r fmt(100 * share12, 1)`%** tinggal di dua kelas terendah: *intensitas* risiko ada di daerah berbalita sedikit, *skala* jumlah anak di daerah berisiko lebih rendah. Daerah berbalita terbanyak pada dua kelas tertinggi: `r big45`.
+
+::: {.howto}
+**Cara membaca.** Ukuran lingkaran menggunakan akar jumlah balita sehingga *luas* lingkaran sebanding dengan jumlah balita. Lingkaran besar diurutkan pada lapisan bawah agar lingkaran kecil tetap terlihat. Warna memakai kelas dan palet yang sama dengan peta sebelumnya sehingga kedua peta dapat dibandingkan secara langsung.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kab/Kota (SUPAS 2025); Jumlah Penduduk Kelompok Umur 0–4 (2025).]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz}
+```{r}
+#| label: peta-simbol
+cen$rad <- 2.5 + 17 * sqrt(cen$balita / max(cen$balita))
+grp3 <- sprintf("Kelas %d · %s–%s", cj$k, fmt(cj$lo, 1), fmt(cj$hi, 1))
+m3 <- leaflet(height = 430, options = leafletOptions(minZoom = 4)) |>
+  addPolygons(data = geo, fillColor = "#1a2347", fillOpacity = 1, color = bg, weight = .4,
+              options = pathOptions(interactive = FALSE))   # latar batas wilayah; tanpa tile eksternal
+for (k in seq_along(grp3)) {
+  dk <- cen[cen$kelas_jenks == cj$k[k], ]
+  m3 <- addCircleMarkers(m3, data = dk, lng = ~lon, lat = ~lat, radius = ~rad,
+          color = bg, weight = .7, fillColor = pal_u5[cj$k[k]], fillOpacity = .78,
+          label = tip(dk), group = grp3[k])
+}
+sz <- signif(quantile(cen$balita, c(.1, .5, .95)), 2)
+sz_html <- paste0("<div class='sizeleg'><b>Jumlah balita</b>",
+  paste0("<div><span class='c' style='width:", 2 * (2.5 + 17 * sqrt(sz / max(cen$balita))), "px;height:",
+         2 * (2.5 + 17 * sqrt(sz / max(cen$balita))), "px'></span>", fmt(sz, 0), "</div>", collapse = ""), "</div>")
+m3 <- m3 |>
+  addLayersControl(overlayGroups = grp3, position = "topright", options = layersControlOptions(collapsed = FALSE)) |>
+  hideGroup(grp3[seq_len(max(length(grp3) - 3, 0))]) |>
+  addLegend("bottomright", colors = pal_u5, labels = leg(cj), opacity = 1,
+            title = "Kelas U5MR<br><small>per 1.000 kelahiran</small>") |>
+  addControl(HTML(sz_html), position = "bottomleft") |>
+  setView(118, -2.5, 5)
+m3
+```
+:::
+:::
+:::
+
+
+[Sejauh ini baru sebaran yang ditampilkan. Untuk memahami penyebabnya, perlu ditelaah faktor-faktor yang menyertai kematian balita.]{.bridge}
+:::
+
+::: {#s4 .story-section .reveal data-title="Apa yang menyertai?"}
+[04 · Teman seperjalanan]{.kicker}
+
+## Kematian balita tidak datang sendirian
+
+Kematian balita berkaitan dengan kondisi sosial-ekonomi dan akses layanan dasar yang hanya tersedia di tingkat provinsi, sehingga analisis memakai **`r nrow(prov)` provinsi dan `r length(vars)` variabel**. PCA merangkumnya menjadi satu pola dominan (**`r fmt(100 * ve[1], 0)`%** variasi) yang memisahkan provinsi dengan **`r join_id(pos1)`** tinggi dari provinsi dengan **`r join_id(neg1)`** tinggi. Kemiskinan berkorelasi `r kuat(cr["Kemiskinan"])` dan `r arah(cr["Kemiskinan"])` dengan U5MR, sedangkan sanitasi dan air minum layak `r arah(cr["Sanitasi"])`; TPT hanya `r kuat(cr["TPT"])` sehingga bukan pembeda utama.
+
+::: {.tech data-sum="Detail teknis (PCA)"}
+PC1 menjelaskan `r fmt(100 * ve[1], 1)`% variasi dengan muatan positif pada `r join_id(pos1)` dan muatan negatif pada `r join_id(neg1)`. PC2 (`r fmt(100 * ve[2], 1)`%) didominasi oleh `r join_id(dom2)`. Uji sensitivitas tanpa AKA dan AKABA menghasilkan PC1 yang nyaris sama (Spearman ρ = `r fmt(pc$spearman_pc1, 2)`).
+:::
+
+
+
+```{r}
+#| label: chips
+lab_v <- c(Kemiskinan = "Kemiskinan", TPT = "TPT", Sanitasi = "Sanitasi layak", AirMinum = "Air minum layak")
+tags$div(class = "chips", lapply(names(cr), function(v)
+  tags$span(class = "chip", tags$b(lab_v[v]), sprintf(" r = %s · %s, %s", fmt(cr[v], 2), kuat(cr[v]), arah(cr[v])))))
+```
+
+::: {.grid2}
+::: {.card-viz}
+```{r}
+#| label: biplot
+sd_b <- SharedData$new(d, key = ~prov_nm, group = "prov")
+a <- .85 * max(abs(c(d$PC1, d$PC2))) / max(abs(c(ld$PC1, ld$PC2)))
+col_g <- c(Kematian = "#F0E442", `Sosial-ekonomi` = "#CC79A7")
+ann <- lapply(seq_len(nrow(ld)), function(i) list(
+  x = ld$PC1[i] * a, y = ld$PC2[i] * a, ax = 0, ay = 0, xref = "x", yref = "y", axref = "x", ayref = "y",
+  showarrow = TRUE, arrowhead = 2, arrowsize = 1, arrowwidth = 1.6, arrowcolor = col_g[[ld$kelompok[i]]],
+  text = paste0("<b>", ld$variabel[i], "</b>"), font = list(color = col_g[[ld$kelompok[i]]], size = 12)))
+bp <- plot_ly(sd_b, height = 400, x = ~PC1, y = ~PC2, color = ~kl, colors = cl_cols, type = "scatter", mode = "markers",
+              marker = list(size = 12, opacity = .92, line = list(color = "#fff", width = .6)),
+              text = ~prov_nm, hovertemplate = "<b>%{text}</b><br>PC1 %{x:.2f} · PC2 %{y:.2f}<extra></extra>")
+if (any(d$pencilan)) {
+  bp <- add_markers(bp, data = filter(d, pencilan), x = ~PC1, y = ~PC2, inherit = FALSE, name = "Pencilan",
+                    marker = list(size = 24, symbol = "circle-open", color = "rgba(0,0,0,0)", line = list(color = "#ffffff", width = 1.8)),
+                    hoverinfo = "skip")
+}
+bp |>
+  dark_layout(dragmode = "select", annotations = ann,
+              title = list(text = "<b>Biplot PCA</b> · seret kotak untuk memilih", x = .02, font = list(size = 14)),
+              xaxis = ax(sprintf("PC1 (%s%%)", fmt(100 * ve[1], 1))), yaxis = ax(sprintf("PC2 (%s%%)", fmt(100 * ve[2], 1))),
+              legend = list(orientation = "h", y = -.18), margin = list(l = 50, r = 10, t = 40, b = 40)) |>
+  highlight(on = "plotly_selected", off = "plotly_deselect", opacityDim = .12, selected = attrs_selected(opacity = 1)) |>
+  config(displaylogo = FALSE)
+```
+:::
+::: {.card-viz}
+```{r}
+#| label: parcoords
+zl <- as.data.frame(pc$z) |> tibble::rownames_to_column("provinsi") |>
+  pivot_longer(-provinsi, names_to = "var", values_to = "z") |>
+  left_join(select(d, provinsi, prov_nm, kl), by = "provinsi") |>
+  mutate(var = factor(var, levels = vars))
+sd_l <- SharedData$new(zl, key = ~prov_nm, group = "prov")
+plot_ly(sd_l, height = 400, x = ~var, y = ~z, split = ~prov_nm, color = ~kl, colors = cl_cols, type = "scatter",
+        mode = "lines+markers", line = list(width = 1.8), marker = list(size = 5), opacity = .85,
+        text = ~prov_nm, hovertemplate = "<b>%{text}</b><br>%{x}: z = %{y:.2f}<extra></extra>", showlegend = FALSE) |>
+  dark_layout(dragmode = "select",
+              title = list(text = "<b>Koordinat paralel</b> · z-score tiap variabel", x = .02, font = list(size = 14)),
+              xaxis = ax(NULL, categoryorder = "array", categoryarray = vars),
+              yaxis = ax("z-score (simpangan baku dari rerata)"), margin = list(l = 55, r = 10, t = 40, b = 40)) |>
+  highlight(on = "plotly_selected", off = "plotly_deselect", opacityDim = .1, selected = attrs_selected(opacity = 1)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+
+::: {.card-viz .tight}
+```{r}
+#| label: tabel-linked
+tbl <- d |> transmute(prov_nm, Pulau = as.character(pulau), Klaster = as.character(kl),
+                      AKABA = round(AKABA, 2), Kemiskinan = round(Kemiskinan, 2),
+                      Sanitasi = round(Sanitasi, 1), AirMinum = round(AirMinum, 1))
+datatable(SharedData$new(tbl, key = ~prov_nm, group = "prov"), rownames = FALSE, class = "compact",
+          colnames = c("Provinsi", "Pulau", "Klaster", "U5MR", "Miskin (%)", "Sanitasi (%)", "Air minum (%)"),
+          options = list(pageLength = 6, dom = "tip", scrollX = TRUE))
+```
+:::
+
+Provinsi klaster U5MR tertinggi berada di sisi positif PC1 searah indikator kematian, dengan pencilan terjauh **`r d$prov_nm[which.max(d$PC1)]`**; pada koordinat paralel, garis klaster ini jauh di atas rerata pada kematian dan kemiskinan tetapi menukik pada sanitasi dan air minum layak. Korelasi tidak menunjukkan sebab-akibat.
+
+::: {.howto}
+**Cara membaca.** *Brushing & linking*: seret kotak pada biplot atau koordinat paralel; provinsi terpilih akan disorot pada kedua tampilan, dan tabel di bawahnya hanya menampilkan baris terpilih (klik dua kali untuk mengatur ulang). Pada layar sentuh, ketuk satu titik atau pilih ikon *Box Select* pada bilah alat grafik. Singkatan: AKK = angka kematian kasar, AKB = angka kematian bayi, AKABA = angka kematian balita, AKA = angka kematian anak. Panah kuning menunjukkan indikator kematian, panah merah muda menunjukkan indikator sosial-ekonomi, dan lingkaran putih menandai pencilan. Warna titik menyatakan klaster (palet Okabe-Ito, aman bagi penderita buta warna).
+:::
+
+[Sumber: BPS. Indikator kematian (AKK, AKB, AKABA, AKA), persentase penduduk miskin, tingkat pengangguran terbuka (TPT), akses sanitasi layak, dan akses air minum layak menurut provinsi, seluruhnya tahun 2025.]{.src}
+
+[Faktor-faktor tersebut membentuk profil tiap provinsi. Berdasarkan profil ini, provinsi dengan kondisi serupa dikelompokkan.]{.bridge}
+:::
+
+::: {#s5 .story-section .reveal data-title="Senasib"}
+[05 · Senasib sepenanggungan]{.kicker}
+
+## Siapa senasib dengan siapa? Ada kelompok, dan ada pengecualian
+
+::: {.split}
+::: {.split-text}
+Provinsi dikelompokkan menurut kedelapan variabel terstandar; heatmap menampilkan tiap provinsi (baris) dan indikator (kolom). Dari **`r nrow(rg)` klaster**, klaster U5MR tertinggi beranggotakan **`r rg_hi$n` provinsi** (`r join_id(mem_hi)`), dengan rerata U5MR **`r fmt(rg_hi$AKABA, 1)`** (`r fmt(rg_hi$AKABA / rg_lo$AKABA, 1)` kali klaster terendah), kemiskinan `r fmt(rg_hi$Kemiskinan, 1)`% (berbanding `r fmt(rg_lo$Kemiskinan, 1)`%), dan akses sanitasi layak `r fmt(rg_lo$Sanitasi - rg_hi$Sanitasi, 1)` poin lebih rendah. `r if (length(pulau_hi) == 1) paste0("Seluruh anggotanya berada di Pulau ", pulau_hi, ", sehingga masalahnya bersifat kewilayahan.") else ""`
+
+::: {.tech data-sum="Detail teknis (k-means dan pencilan)"}
+*K-means* pada data terstandar memilih k = `r nrow(rg)` (silhouette tertinggi `r fmt(sil_best, 2)`). Pencilan (skor komponen melampaui ±2): pada sisi U5MR tinggi `r if (length(out_pos)) join_id(out_pos) else "tidak ada"`, pada sisi sebaliknya `r if (length(out_neg)) join_id(out_neg) else "tidak ada"`; keduanya dibaca sebagai kasus khusus, bukan kesalahan data.
+:::
+
+::: {.howto}
+**Cara membaca.** Warna sel menyatakan z-score (biru di bawah rerata nasional dan oranye di atas rerata nasional; skala divergen biru–oranye yang aman bagi penderita buta warna) sehingga satu pola warna dapat menyatukan semua variabel meskipun satuannya berbeda. Pita warna "Klaster" memakai warna yang sama dengan biplot. Nilai asli ditampilkan ketika kursor diarahkan ke sel.
+:::
+
+[Sumber: BPS. Delapan indikator provinsi tahun 2025 (AKK, AKB, AKABA, AKA, kemiskinan, TPT, sanitasi layak, air minum layak); pengolahan: penulis.]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz}
+```{r}
+#| label: heatmap
+ord_p <- kl$urutan_provinsi; ord_v <- kl$urutan_variabel
+zm   <- pc$z[ord_p, ord_v]
+rawm <- as.matrix(prov[match(ord_p, prov$provinsi), ord_v])
+y_lab <- nm(ord_p)
+cl_row <- d$kl[match(ord_p, d$provinsi)]
+plot_ly(height = 640, x = ord_v, y = y_lab, z = zm, type = "heatmap", colorscale = div_cs, zmin = -2.5, zmax = 2.5,
+        text = rawm, xgap = 2, ygap = 2,
+        hovertemplate = "<b>%{y}</b><br>%{x}: %{text}<br>z = %{z:.2f}<extra></extra>",
+        colorbar = list(title = "z-score", len = .5, thickness = 10)) |>
+  add_markers(x = rep("Klaster", length(y_lab)), y = y_lab, inherit = FALSE, showlegend = FALSE,
+              marker = list(symbol = "square", size = 11, color = unname(cl_cols[as.character(cl_row)])),
+              text = as.character(cl_row), hovertemplate = "<b>%{y}</b><br>%{text}<extra></extra>") |>
+  dark_layout(
+              title = list(text = "<b>Heatmap terklaster</b> · baris & kolom diurutkan menurut hierarki klaster", x = .02, font = list(size = 14)),
+              xaxis = list(categoryorder = "array", categoryarray = c(ord_v, "Klaster"), side = "top", gridcolor = "rgba(0,0,0,0)"),
+              yaxis = list(autorange = "reversed", categoryorder = "array", categoryarray = y_lab, gridcolor = "rgba(0,0,0,0)",
+                           tickfont = list(size = 10)),
+              margin = list(l = 130, r = 10, t = 70, b = 10)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+:::
+
+::: {.card-viz .tight}
+```{r}
+#| label: ringkas-klaster
+mem <- d |> mutate(kid = as.integer(as.character(klaster))) |> group_by(kid) |>
+  summarise(Anggota = paste(sort(prov_nm), collapse = ", "), .groups = "drop")
+tab <- rg |> arrange(desc(AKABA)) |> left_join(mem, by = c("klaster" = "kid")) |>
+  transmute(Klaster = unname(cl_names[as.character(klaster)]), n,
+            `U5MR` = round(AKABA, 1), `Kematian anak` = round(AKA, 1), `Miskin (%)` = round(Kemiskinan, 1),
+            `Sanitasi (%)` = round(Sanitasi, 1), `Air minum (%)` = round(AirMinum, 1), Anggota)
+datatable(tab, rownames = FALSE, class = "compact", options = list(dom = "t", paging = FALSE, scrollX = TRUE))
+```
+:::
+
+
+Kemiskinan bukan satu-satunya penentu: `r if (length(miskin_tinggi_bukan)) paste0(join_id(miskin_tinggi_bukan), " termasuk seperempat provinsi termiskin, tetapi tidak berada di klaster U5MR tertinggi") else "seluruh provinsi termiskin berada di klaster U5MR tertinggi"``r if (length(klaster_tinggi_miskin_rendah)) paste0("; sebaliknya, ", join_id(klaster_tinggi_miskin_rendah), " berada di klaster tertinggi dengan kemiskinan di bawah median") else ""`. Klaster terendah pun tidak seragam`r if (length(hetero)) paste0(": ", join_id(hetero), " ber-U5MR di atas rerata nasional") else ""`, dan k = `r nrow(rg)` hanya menangkap pemisahan terbesar.
+
+[Berdasarkan risiko, jumlah anak, dan profil provinsi, tersedia dasar yang memadai untuk menentukan daerah yang paling mendesak untuk ditangani.]{.bridge}
+:::
+
+::: {#s6 .story-section .reveal data-title="Prioritas"}
+[06 · Dari angka ke langkah]{.kicker}
+
+## Jika harus memilih, ke mana perhatian diarahkan lebih dulu?
+
+::: {.split}
+::: {.split-text}
+Prioritas menggabungkan *seberapa tinggi risikonya* dan *berapa banyak anak yang terlibat*. Kuadran kanan-atas (U5MR di atas target SDG 25 **dan** seperempat teratas jumlah balita) memuat **`r n_prio` daerah** yang dihuni **`r fmt(100 * sh_prio, 1)`%** balita; sepuluh teratas (U5MR `r fmt(min(top10$u5mr), 1)`–`r fmt(max(top10$u5mr), 1)`) adalah `r join_id(top10$label)`. Sebanyak **`r n35` daerah** ber-U5MR di atas 35 `r if (all(hi35$balita < q75)) "seluruhnya berbalita sedikit" else "umumnya berbalita sedikit"` (`r fmt(100 * pap35, 0)`% di `r top_pulau$pulau`), sehingga daftar ini bersifat konservatif dan melewatkan daerah kecil berisiko sangat tinggi. Secara keseluruhan, **`r fmt(100 * sh_above, 1)`%** balita tinggal di daerah yang masih di atas target SDG.
+
+::: {.howto}
+**Cara membaca.** Setiap titik mewakili satu kabupaten/kota. Garis vertikal menunjukkan target SDG 3.2, sedangkan garis horizontal menunjukkan batas seperempat teratas jumlah balita. Tabel menyajikan 10 daerah prioritas dengan hasil kali U5MR dan jumlah balita terbesar sebagai indikator kasar beban, bukan jumlah kematian yang sebenarnya. Keputusan intervensi tetap memerlukan data layanan kesehatan lokal.
+:::
+
+[Sumber: BPS. Angka Kematian Balita menurut Kab/Kota (SUPAS 2025); Jumlah Penduduk 0–4 (2025). Target SDG 3.2: PBB (non-BPS).]{.src}
+:::
+::: {.split-viz}
+::: {.card-viz}
+```{r}
+#| label: prioritas
+plot_ly(gd, height = 400, x = ~u5mr, y = ~balita, color = ~grp, colors = c(Prioritas = "#E69F00", Lainnya = "#56B4E9"),
+        type = "scatter", mode = "markers", marker = list(size = 7, opacity = .75),
+        text = ~paste0("<b>", label, "</b><br>", nm(provinsi)),
+        hovertemplate = "%{text}<br>U5MR %{x:.1f} · Balita %{y:,.0f}<extra></extra>") |>
+  dark_layout(xaxis = ax("U5MR (per 1.000 kelahiran hidup)", rangemode = "tozero"),
+              yaxis = ax("Jumlah balita (skala log)", type = "log"),
+              shapes = list(
+                list(type = "line", x0 = 25, x1 = 25, y0 = 0, y1 = 1, yref = "paper", line = list(color = "#fbbf24", dash = "dot", width = 1.5)),
+                list(type = "line", y0 = q75, y1 = q75, x0 = 0, x1 = 1, xref = "paper", line = list(color = "#fbbf24", dash = "dot", width = 1.5))),
+              annotations = list(list(x = .99, y = .99, xref = "paper", yref = "paper", xanchor = "right", yanchor = "top",
+                                      showarrow = FALSE, text = "<b>PRIORITAS</b>", font = list(color = "#E69F00", size = 12))),
+              legend = list(orientation = "h", y = -.2), margin = list(l = 60, r = 15, t = 15, b = 40)) |>
+  config(displaylogo = FALSE)
+```
+:::
+:::
+:::
+
+::: {.card-viz .tight}
+```{r}
+#| label: top10
+datatable(top10 |> transmute(Daerah = label, Provinsi = nm(provinsi), U5MR = u5mr, Balita = balita),
+          rownames = FALSE, class = "compact", options = list(dom = "t", paging = FALSE, scrollX = TRUE)) |>
+  DT::formatRound("U5MR", 1, dec.mark = ",") |> DT::formatRound("Balita", 0, mark = ".")
+```
+:::
+
+
+[Daftar ini hanya merupakan titik awal. Berikut ringkasan temuan utama.]{.bridge}
+:::
+
+::: {#s7 .story-section .reveal data-title="Penutup"}
+[07 · Penutup]{.kicker}
+
+## Yang tertinggal setelah semua angka ini
+
+::: {.findings}
+::: {.finding}
+**`r fmt(wid$rentang, 1)`**
+Selisih U5MR kabupaten/kota terbaik dan terburuk pada provinsi dengan rentang terlebar (`r nm(wid$provinsi)`); kesenjangan terjadi di dalam provinsi, bukan hanya antarprovinsi.
+:::
+::: {.finding}
+**`r n_above` daerah**
+Kabupaten/kota yang masih berada di atas target SDG 3.2 (U5MR 25) dari total `r nrow(geo)` kabupaten/kota.
+:::
+::: {.finding}
+**`r fmt(100 * top3_share, 0)`%**
+Daerah kelas U5MR tertinggi yang berada di tiga provinsi saja; risiko ekstrem terkonsentrasi secara spasial.
+:::
+::: {.finding}
+**`r n50` provinsi**
+Jumlah provinsi yang cukup untuk menghimpun separuh balita Indonesia; jumlah anak terpusat pada sedikit wilayah.
+:::
+::: {.finding}
+**`r fmt(100 * share45, 1)`%**
+Balita yang bermukim pada dua kelas U5MR tertinggi; risiko ekstrem dan skala jumlah anak berada pada wilayah yang berbeda.
+:::
+::: {.finding}
+**`r fmt(100 * ve[1], 0)`%**
+Variasi antarprovinsi yang dijelaskan oleh satu pola dominan, yaitu kematian dan kemiskinan berlawanan dengan sanitasi dan air minum layak.
+:::
+::: {.finding}
+**`r fmt(rg_hi$AKABA / rg_lo$AKABA, 1)`×**
+Perbandingan rerata U5MR klaster provinsi tertinggi terhadap terendah, dengan akses sanitasi layak yang lebih rendah sebesar `r fmt(rg_lo$Sanitasi - rg_hi$Sanitasi, 1)` poin.
+:::
+::: {.finding}
+**`r n_prio` daerah**
+Daerah dengan risiko di atas target SDG sekaligus berbalita banyak; daftar pendek yang layak diprioritaskan.
+:::
+:::
+
+::: {.closing}
+Lima tahun pertama merupakan fondasi kehidupan anak, tetapi peluang melaluinya belum merata. Kesenjangan terjadi antarwilayah dan di dalam satu provinsi; risiko ekstrem terpusat di `r top_pulau$pulau``r if (mi$p.value < .05 && mi$statistic > 0) paste0(" dan terbukti mengelompok secara spasial (Moran's I = ", fmt(mi$statistic, 2), ")") else ""`, sedangkan balita terbanyak berada di `r pul_big$label`; dan kematian balita berjalan beriringan dengan kemiskinan serta terbatasnya sanitasi dan air minum layak. Rata-rata nasional karenanya tidak memadai, dan analisis tingkat kabupaten/kota diperlukan untuk menjangkau anak yang paling rentan.
+
+Daftar prioritas hanyalah titik awal: daerah berpenduduk besar berisiko moderat dan daerah kecil berisiko sangat tinggi memerlukan pendekatan berbeda. Di balik setiap titik pada peta ada seorang anak yang berhak merayakan ulang tahun kelimanya.
+:::
+:::
+
+```{=html}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('.howto, .tech').forEach(function (h) {
+    var d = document.createElement('details'); d.className = h.className;
+    var s = document.createElement('summary'); s.textContent = h.dataset.sum || 'Cara membaca'; d.appendChild(s);
+    var st = h.querySelector('strong'); if (st && /^Cara membaca/.test(st.textContent)) st.remove();
+    while (h.firstChild) d.appendChild(h.firstChild); h.replaceWith(d);
+  });
+  var rm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) {
+      if (!e.isIntersecting) return; io.unobserve(e.target);
+      var el = e.target, m = el.textContent.match(/^([\d.,]+)(.*)$/s); if (!m || rm) return;
+      var dec = (m[1].split(',')[1] || '').length, to = parseFloat(m[1].replace(/\./g, '').replace(',', '.')), t0 = null;
+      (function step(t) { t0 = t0 || t; var p = Math.min((t - t0) / 1400, 1), v = to * (1 - Math.pow(1 - p, 3));
+        el.textContent = v.toLocaleString('id-ID', {minimumFractionDigits: dec, maximumFractionDigits: dec}) + m[2];
+        if (p < 1) requestAnimationFrame(step); })(performance.now());
+    });
+  }, {threshold: .6});
+  document.querySelectorAll('.finding strong, .finding b').forEach(function (el) { io.observe(el); });
+});
+</script>
+```

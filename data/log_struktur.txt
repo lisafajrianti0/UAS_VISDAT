@@ -1,0 +1,123 @@
+===== Data 1 (mentah, 2 kolom) =====
+tibble [556 × 2] (S3: tbl_df/tbl/data.frame)
+ $ nama : chr [1:556] "Provinsi/Kabupaten/Kota" NA "ACEH" "Simeulue" ...
+ $ nilai: chr [1:556] "Angka Kematian Balita Menurut Kabupaten/Kota, Hasil SUPAS" "2025" "18.94" "36.09" ...
+# A tibble: 5 × 2
+  nama                    nilai                                                    
+  <chr>                   <chr>                                                    
+1 Provinsi/Kabupaten/Kota Angka Kematian Balita Menurut Kabupaten/Kota, Hasil SUPAS
+2 <NA>                    2025                                                     
+3 ACEH                    18.94                                                    
+4 Simeulue                36.09                                                    
+5 Aceh Singkil            33.58                                                    
+
+===== Data 1 kab/kota =====
+tibble [514 × 3] (S3: tbl_df/tbl/data.frame)
+ $ provinsi: chr [1:514] "ACEH" "ACEH" "ACEH" "ACEH" ...
+ $ nama    : chr [1:514] "Simeulue" "Aceh Singkil" "Aceh Selatan" "Aceh Tenggara" ...
+ $ nilai   : num [1:514] 36.1 33.6 32 22 22.7 ...
+# A tibble: 5 × 3
+  provinsi nama          nilai
+  <chr>    <chr>         <dbl>
+1 ACEH     Simeulue       36.1
+2 ACEH     Aceh Singkil   33.6
+3 ACEH     Aceh Selatan   32.0
+4 ACEH     Aceh Tenggara  22  
+5 ACEH     Aceh Timur     22.7
+
+===== Data 1 provinsi =====
+tibble [38 × 2] (S3: tbl_df/tbl/data.frame)
+ $ provinsi: chr [1:38] "ACEH" "SUMATERA UTARA" "SUMATERA BARAT" "RIAU" ...
+ $ nilai   : num [1:38] 18.9 18.5 16.9 15.4 17.2 ...
+# A tibble: 5 × 2
+  provinsi       nilai
+  <chr>          <dbl>
+1 ACEH            18.9
+2 SUMATERA UTARA  18.5
+3 SUMATERA BARAT  16.9
+4 RIAU            15.4
+5 JAMBI           17.2
+
+===== Data 2 (mentah, 2 kolom) =====
+tibble [584 × 2] (S3: tbl_df/tbl/data.frame)
+ $ nama : chr [1:584] "Provinsi/Kabupaten/Kota/Indonesia" NA NA "ACEH" ...
+ $ nilai: chr [1:584] "Jumlah Penduduk menurut Kabupaten/Kota dan Kelompok Umur" "36617.00013888889" "2025" "509498" ...
+# A tibble: 5 × 2
+  nama                              nilai                                                   
+  <chr>                             <chr>                                                   
+1 Provinsi/Kabupaten/Kota/Indonesia Jumlah Penduduk menurut Kabupaten/Kota dan Kelompok Umur
+2 <NA>                              36617.00013888889                                       
+3 <NA>                              2025                                                    
+4 ACEH                              509498                                                  
+5 Simeulue                          10112                                                   
+
+===== Data 2 kab/kota =====
+tibble [540 × 3] (S3: tbl_df/tbl/data.frame)
+ $ provinsi: chr [1:540] "ACEH" "ACEH" "ACEH" "ACEH" ...
+ $ nama    : chr [1:540] "Simeulue" "Aceh Singkil" "Aceh Selatan" "Aceh Tenggara" ...
+ $ nilai   : num [1:540] 10112 15704 21793 24443 40209 ...
+# A tibble: 5 × 3
+  provinsi nama          nilai
+  <chr>    <chr>         <dbl>
+1 ACEH     Simeulue      10112
+2 ACEH     Aceh Singkil  15704
+3 ACEH     Aceh Selatan  21793
+4 ACEH     Aceh Tenggara 24443
+5 ACEH     Aceh Timur    40209
+
+===== Data 2 provinsi =====
+tibble [38 × 2] (S3: tbl_df/tbl/data.frame)
+ $ provinsi: chr [1:38] "ACEH" "SUMATERA UTARA" "SUMATERA BARAT" "RIAU" ...
+ $ nilai   : num [1:38] 509498 1436728 525306 584347 324317 ...
+# A tibble: 5 × 2
+  provinsi         nilai
+  <chr>            <dbl>
+1 ACEH            509498
+2 SUMATERA UTARA 1436728
+3 SUMATERA BARAT  525306
+4 RIAU            584347
+5 JAMBI           324317
+
+===== data_multivariat.xlsx =====
+tibble [38 × 9] (S3: tbl_df/tbl/data.frame)
+ $ Provinsi                                                                                             : chr [1:38] "ACEH" "SUMATERA UTARA" "SUMATERA BARAT" "RIAU" ...
+ $ Angka Kematian Kasar                                                                                 : num [1:38] 5.69 5.66 6.65 4.58 5.45 5.84 5.88 6.28 5.56 4.5 ...
+ $ Angka Kematian Bayi                                                                                  : num [1:38] 16.3 15.9 14.6 13.3 14.8 ...
+ $ Angka Kematian Balita                                                                                : num [1:38] 18.9 18.5 16.9 15.4 17.2 ...
+ $ Angka Kematian Anak                                                                                  : num [1:38] 2.68 2.63 2.35 2.13 2.44 2.41 2.91 2.2 2.36 1.89 ...
+ $ Persentase Penduduk Miskin (P0)                                                                      : num [1:38] 12.22 7.24 5.31 6.3 6.89 ...
+ $ Tingkat Pengangguran Terbuka                                                                         : num [1:38] 5.64 5.32 5.62 4.16 4.26 3.69 3.41 4.21 4.45 6.45 ...
+ $ Persentase Rumah Tangga menurut Provinsi dan Memiliki Akses terhadap Sanitasi Layak (Persen)         : num [1:38] 82.2 87.5 74.6 91.2 85.9 ...
+ $ Persentase Rumah Tangga yang Memiliki Akses terhadap Sumber Air Minum Layak Menurut Provinsi (Persen): num [1:38] 92.1 93.2 87.3 92.2 82.5 ...
+# A tibble: 5 × 9
+  Provinsi       `Angka Kematian Kasar` `Angka Kematian Bayi` `Angka Kematian Balita` `Angka Kematian Anak` Persentase Penduduk Miski…¹ Tingkat Pengangguran…²
+  <chr>                           <dbl>                 <dbl>                   <dbl>                 <dbl>                       <dbl>                  <dbl>
+1 ACEH                             5.69                  16.3                    18.9                  2.68                       12.2                    5.64
+2 SUMATERA UTARA                   5.66                  15.9                    18.5                  2.63                        7.24                   5.32
+3 SUMATERA BARAT                   6.65                  14.6                    16.9                  2.35                        5.31                   5.62
+4 RIAU                             4.58                  13.3                    15.4                  2.13                        6.3                    4.16
+5 JAMBI                            5.45                  14.8                    17.2                  2.44                        6.89                   4.26
+# ℹ abbreviated names: ¹​`Persentase Penduduk Miskin (P0)`, ²​`Tingkat Pengangguran Terbuka`
+# ℹ 2 more variables: `Persentase Rumah Tangga menurut Provinsi dan Memiliki Akses terhadap Sanitasi Layak (Persen)` <dbl>,
+#   `Persentase Rumah Tangga yang Memiliki Akses terhadap Sumber Air Minum Layak Menurut Provinsi (Persen)` <dbl>
+
+===== geojson (tanpa geometri) =====
+'data.frame':	514 obs. of  7 variables:
+ $ code                    : chr  "11.05" "11.12" "11.06" "11.14" ...
+ $ name                    : chr  "Kabupaten Aceh Barat" "Kabupaten Aceh Barat Daya" "Kabupaten Aceh Besar" "Kabupaten Aceh Jaya" ...
+ $ level                   : chr  "regency" "regency" "regency" "regency" ...
+ $ join_key                : chr  "11.05_Kabupaten Aceh Barat" "11.12_Kabupaten Aceh Barat Daya" "11.06_Kabupaten Aceh Besar" "11.14_Kabupaten Aceh Jaya" ...
+ $ Kode_Wilayah_BPS..Field2: chr  "1107" "1112" "1108" "1116" ...
+ $ Kode_Wilayah_BPS..Field3: chr  "Aceh Barat" "Aceh Barat Daya" "Aceh Besar" "Aceh Jaya" ...
+ $ Kode_Wilayah_BPS..Field6: chr  "Aceh" "Aceh" "Aceh" "Aceh" ...
+   code                      name   level                        join_key Kode_Wilayah_BPS..Field2 Kode_Wilayah_BPS..Field3 Kode_Wilayah_BPS..Field6
+1 11.05      Kabupaten Aceh Barat regency      11.05_Kabupaten Aceh Barat                     1107               Aceh Barat                     Aceh
+2 11.12 Kabupaten Aceh Barat Daya regency 11.12_Kabupaten Aceh Barat Daya                     1112          Aceh Barat Daya                     Aceh
+3 11.06      Kabupaten Aceh Besar regency      11.06_Kabupaten Aceh Besar                     1108               Aceh Besar                     Aceh
+4 11.14       Kabupaten Aceh Jaya regency       11.14_Kabupaten Aceh Jaya                     1116                Aceh Jaya                     Aceh
+5 11.01    Kabupaten Aceh Selatan regency    11.01_Kabupaten Aceh Selatan                     1103             Aceh Selatan                     Aceh
+
+Data 1: kab/kota = 514 | provinsi = 38
+Data 2: kab/kota = 540 | provinsi = 38 | INDONESIA = 22752569
+multivariat: 38 baris x 9 kolom
+geojson: 514 fitur | CRS: WGS 84

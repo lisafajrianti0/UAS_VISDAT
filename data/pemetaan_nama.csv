@@ -1,0 +1,36 @@
+sumber,nama_asal,nama_tujuan
+Data 2 -> Data 1,Toba Samosir / Toba,Toba Samosir
+Data 2 -> Data 1,Kep. Seribu,Kepulauan Seribu
+Data 2 -> Data 1,Kotabaru,Kota Baru
+Data 2 -> Data 1,Kota Makasar,Kota Makassar
+Data 2 -> Data 1,Mamuju Utara / Pasangkayu,Mamuju Utara
+Data 2 -> Data 1,Maluku Tenggara Barat / Kepulauan Tanimbar,Maluku Tenggara Barat
+Data 1 -> geojson,Toba Samosir,Kabupaten Toba
+Data 1 -> geojson,Labuhan Batu,Kabupaten Labuhanbatu
+Data 1 -> geojson,Labuhan Batu Selatan,Kabupaten Labuhanbatu Selatan
+Data 1 -> geojson,Labuhan Batu Utara,Kabupaten Labuhanbatu Utara
+Data 1 -> geojson,Kota Tanjung Balai,Kota Tanjungbalai
+Data 1 -> geojson,Kota Pematang Siantar,Kota Pematangsiantar
+Data 1 -> geojson,Kota Sawah Lunto,Kota Sawahlunto
+Data 1 -> geojson,Batang Hari,Kabupaten Batanghari
+Data 1 -> geojson,Banyu Asin,Kabupaten Banyuasin
+Data 1 -> geojson,Kota Lubuklinggau,Kota Lubuk Linggau
+Data 1 -> geojson,Tulangbawang,Kabupaten Tulang Bawang
+Data 1 -> geojson,Kepulauan Seribu,Kabupaten Administrasi Kepulauan Seribu
+Data 1 -> geojson,Kota Jakarta Selatan,Kota Administrasi Jakarta Selatan
+Data 1 -> geojson,Kota Jakarta Timur,Kota Administrasi Jakarta Timur
+Data 1 -> geojson,Kota Jakarta Pusat,Kota Administrasi Jakarta Pusat
+Data 1 -> geojson,Kota Jakarta Barat,Kota Administrasi Jakarta Barat
+Data 1 -> geojson,Kota Jakarta Utara,Kota Administrasi Jakarta Utara
+Data 1 -> geojson,Gunung Kidul,Kabupaten Gunungkidul
+Data 1 -> geojson,Kota Palangka Raya,Kota Palangkaraya
+Data 1 -> geojson,Kota Baru,Kabupaten Kotabaru
+Data 1 -> geojson,Kota Banjar Baru,Kota Banjarbaru
+Data 1 -> geojson,Siau Tagulandang Biaro,Kabupaten Kep. Siau Tagulandang Biaro
+Data 1 -> geojson,Tojo Una-Una,Kabupaten Tojo Una Una
+Data 1 -> geojson,Kota Baubau,Kota Bau Bau
+Data 1 -> geojson,Mamuju Utara,Kabupaten Pasangkayu
+Data 1 -> geojson,Maluku Tenggara Barat,Kabupaten Kepulauan Tanimbar
+Data 1 -> geojson,Fakfak,Kabupaten Fak Fak
+Provinsi multivariat -> Data 1,DI YOGYAKARTA,D I YOGYAKARTA
+Provinsi multivariat -> Data 1,KEP. RIAU,KEPULAUAN RIAU
