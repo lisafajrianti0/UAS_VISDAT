@@ -70,3 +70,140 @@
   window.addEventListener('load', function () { setTimeout(function () { window.dispatchEvent(new Event('resize')); }, 400); });
 })();
 </script>
+<script>
+(function () {
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); };
+  var coarse = window.matchMedia && window.matchMedia('(hover: none)').matches;
+
+  // Orb cahaya latar
+  var fx = document.createElement('div'); fx.className = 'bgfx'; fx.setAttribute('aria-hidden', 'true');
+  fx.innerHTML = '<i></i><i></i>'; document.body.insertBefore(fx, document.body.firstChild);
+
+  // Label navigasi titik (menggantikan tooltip bawaan)
+  Array.prototype.forEach.call(document.querySelectorAll('.dotnav a'), function (a) {
+    a.setAttribute('data-t', a.getAttribute('title') || ''); a.removeAttribute('title');
+  });
+
+  // Scroll: paralaks hero + orb latar
+  var hero = document.getElementById('s-hero'), inner = hero && hero.querySelector('.hero-inner'), ticking = false;
+  function apply() {
+    ticking = false;
+    if (reduce) return;
+    var sy = window.pageYOffset || document.documentElement.scrollTop;
+    fx.children[0].style.transform = 'translate3d(' + (Math.sin(sy / 800) * 80) + 'px,' + (Math.cos(sy / 1000) * 60) + 'px,0)';
+    fx.children[1].style.transform = 'translate3d(' + (Math.cos(sy / 900) * -90) + 'px,' + (Math.sin(sy / 700) * 70) + 'px,0)';
+    if (inner) {
+      var hp = Math.min(1, sy / (window.innerHeight * .85));
+      inner.style.transform = 'translate3d(0,' + (hp * 70) + 'px,0)';
+      inner.style.opacity = String(Math.max(0, 1 - hp * 1.15));
+    }
+  }
+  window.addEventListener('scroll', function () { if (!ticking) { ticking = true; raf(apply); } }, { passive: true });
+  apply();
+
+  // Bintang berkelap-kelip di hero
+  (function () {
+    if (!hero) return;
+    var cv = document.createElement('canvas'); cv.id = 'stars'; cv.setAttribute('aria-hidden', 'true');
+    hero.insertBefore(cv, hero.firstChild);
+    var ctx = cv.getContext('2d'); if (!ctx) return;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2), W = 1, H = 1, S = [], shoot = null, nextShoot = 2500;
+    var vis = true, run = false, tx = .5, ty = .5, cx = .5, cy = .5;
+    var COLS = ['255,255,255', '255,255,255', '255,236,179', '186,214,255', '251,191,36'];
+    function build() {
+      var r = hero.getBoundingClientRect(); W = Math.max(1, r.width); H = Math.max(1, r.height);
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var n = Math.max(55, Math.min(Math.round(W * H / 8500), W < 700 ? 95 : 200)); S = [];
+      for (var i = 0; i < n; i++) S.push({
+        x: Math.random() * W, y: Math.random() * H,
+        r: Math.random() < .08 ? 1.6 + Math.random() * 1.2 : .35 + Math.random() * 1.0,
+        ph: Math.random() * 6.283, sp: .5 + Math.random() * 2.2, z: .15 + Math.random() * .85,
+        c: COLS[(Math.random() * COLS.length) | 0]
+      });
+      if (reduce) draw(0);
+    }
+    function draw(t) {
+      ctx.clearRect(0, 0, W, H);
+      cx += (tx - cx) * .05; cy += (ty - cy) * .05;
+      var s = reduce ? 0 : t / 1000, off = reduce ? 0 : (window.pageYOffset || 0) * .18;
+      for (var i = 0; i < S.length; i++) {
+        var p = S[i], a = reduce ? .7 : .25 + .75 * (.5 + .5 * Math.sin(s * p.sp + p.ph));
+        var x = p.x + (cx - .5) * -30 * p.z, y = p.y + (cy - .5) * -20 * p.z - off * p.z;
+        y = ((y % H) + H) % H;
+        ctx.fillStyle = 'rgba(' + p.c + ',' + a.toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(x, y, p.r, 0, 6.283); ctx.fill();
+        if (p.r > 1.5) {
+          ctx.fillStyle = 'rgba(' + p.c + ',' + (a * .16).toFixed(3) + ')';
+          ctx.beginPath(); ctx.arc(x, y, p.r * 4, 0, 6.283); ctx.fill();
+          ctx.strokeStyle = 'rgba(' + p.c + ',' + (a * .5).toFixed(3) + ')'; ctx.lineWidth = .8;
+          ctx.beginPath(); ctx.moveTo(x - p.r * 4.5, y); ctx.lineTo(x + p.r * 4.5, y);
+          ctx.moveTo(x, y - p.r * 4.5); ctx.lineTo(x, y + p.r * 4.5); ctx.stroke();
+        }
+      }
+      if (!reduce) {
+        if (!shoot && t > nextShoot) shoot = { x: W * (.45 + Math.random() * .55), y: Math.random() * H * .4, vx: -(6 + Math.random() * 3), vy: 2.4 + Math.random() * 1.6, life: 0 };
+        if (shoot) {
+          shoot.x += shoot.vx; shoot.y += shoot.vy; shoot.life++;
+          var g = ctx.createLinearGradient(shoot.x, shoot.y, shoot.x - shoot.vx * 14, shoot.y - shoot.vy * 14);
+          g.addColorStop(0, 'rgba(255,255,255,.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.strokeStyle = g; ctx.lineWidth = 1.6; ctx.beginPath();
+          ctx.moveTo(shoot.x, shoot.y); ctx.lineTo(shoot.x - shoot.vx * 14, shoot.y - shoot.vy * 14); ctx.stroke();
+          if (shoot.life > 80 || shoot.x < -50 || shoot.y > H + 50) { shoot = null; nextShoot = t + 4000 + Math.random() * 5000; }
+        }
+      }
+    }
+    function loop(t) { if (!run) return; draw(t); raf(loop); }
+    function go() { if (reduce || run || !vis || document.hidden) return; run = true; raf(loop); }
+    function stop() { run = false; }
+    build();
+    if (!reduce) {
+      go();
+      if ('IntersectionObserver' in window) new IntersectionObserver(function (es) { vis = es[0].isIntersecting; vis ? go() : stop(); }).observe(hero);
+      document.addEventListener('visibilitychange', function () { document.hidden ? stop() : go(); });
+    }
+    var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(build, 200); });
+    if (!coarse) hero.addEventListener('pointermove', function (e) {
+      var r = hero.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      tx = x / r.width; ty = y / r.height;
+      hero.style.setProperty('--mx', x + 'px'); hero.style.setProperty('--my', y + 'px');
+    }, { passive: true });
+  })();
+
+  // Sorotan cahaya pada kartu temuan dan kartu metode
+  if (!coarse) document.addEventListener('pointermove', function (e) {
+    var el = e.target.closest && e.target.closest('.finding, .mcard'); if (!el) return;
+    var r = el.getBoundingClientRect();
+    el.style.setProperty('--mx', (e.clientX - r.left) + 'px'); el.style.setProperty('--my', (e.clientY - r.top) + 'px');
+  }, { passive: true });
+
+  // Animasi masuk per elemen saat di-scroll (geser, pudar, kabur, berjenjang)
+  if (!reduce && 'IntersectionObserver' in window) {
+    var rules = [
+      ['.story-section > .kicker', 'rv-left'], ['.story-section > h2', 'rv-up'], ['.story-section > h3', 'rv-left'],
+      ['.story-section > p', 'rv-up'], ['.story-section > details', 'rv-up'], ['.story-section > .chips', 'rv-up'],
+      ['.split-text', 'rv-left'], ['.split-viz', 'rv-right'], ['.grid2 > .card-viz', 'rv-up'],
+      ['.story-section > .card-viz', 'rv-up'], ['.method > .mcard', 'rv-up'], ['.closing p', 'rv-up']
+    ];
+    var seen = [], list = [];
+    rules.forEach(function (r) {
+      Array.prototype.forEach.call(document.querySelectorAll(r[0]), function (el) {
+        if (seen.indexOf(el) > -1) return; seen.push(el); list.push([el, r[1]]);
+      });
+    });
+    var cnt = new Map();
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        if (!e.isIntersecting && e.boundingClientRect.top >= 0) return;
+        var el = e.target; io.unobserve(el); el.classList.add('rv-in');
+        setTimeout(function () { el.style.transitionDelay = ''; }, 1800);
+      });
+    }, { threshold: .12, rootMargin: '0px 0px -6% 0px' });
+    list.forEach(function (it) {
+      var el = it[0], par = el.parentNode, i = cnt.get(par) || 0; cnt.set(par, i + 1);
+      el.classList.add('rv', it[1]); el.style.transitionDelay = (Math.min(i, 4) * .09) + 's';
+      io.observe(el);
+    });
+  }
+})();
+</script>

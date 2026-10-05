@@ -46,7 +46,9 @@ font_fam <- "Inter, system-ui, sans-serif"
 
 dark_layout <- function(p, ...) {
   layout(p, paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
-         font = list(color = fg, family = font_fam, size = 11), ...)
+         font = list(color = fg, family = font_fam, size = 11),
+         hoverlabel = list(bgcolor = "#0f1630", bordercolor = "#fbbf24",
+                           font = list(color = "#f8fafc", family = font_fam, size = 12)), ...)
 }
 ax <- function(title = NULL, ...) list(title = title, gridcolor = grid, zerolinecolor = "rgba(255,255,255,.25)",
                                        linecolor = grid, ...)
@@ -303,7 +305,7 @@ tip <- function(d) lapply(sprintf(
   d$label, nm(d$provinsi), as.character(d$pulau), fmt(d$u5mr, 1), fmt(d$balita, 0), d$peringkat_nasional, nrow(geo)), HTML)
 lab <- tip(geo)
 g_j <- "Natural breaks (Jenks)"; g_q <- "Kuantil (5 kelompok sama besar)"
-hl <- highlightOptions(color = "#ffffff", weight = 2, bringToFront = TRUE)
+hl <- highlightOptions(color = "#ffffff", weight = 2, fillOpacity = 1, bringToFront = TRUE)
 
 m1 <- leaflet(geo, height = 430, options = leafletOptions(minZoom = 4)) |>
   addPolygons(fillColor = pal_u5[geo$kelas_jenks], fillOpacity = .92, color = bg, weight = .35,
